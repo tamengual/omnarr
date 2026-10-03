@@ -1,0 +1,56 @@
+# Omnarr config.yml — OPTIONAL. Mount it at /config/config.yml if you want any of this.
+# Connections to your apps (addresses, API keys) are NOT set here: use the setup screen
+# in the web UI (Settings → Connections). They're stored in /data/state.db.
+#
+# (Upgrading from an early version that had `sources:` and `links:` here? They're
+# imported into the database once on first start, then ignored. You can delete them.)
+
+index:
+  path: /data/index.db
+  state: /data/state.db
+  refresh_minutes: 15            # how often the search index is rebuilt from your apps
+
+adult:
+  unlock_minutes: 30             # how long the private-section PIN unlock lasts
+                                 # (the section itself is switched on in Settings; off by default)
+
+# Book -> screen adaptations (shown as linked, separate entries).
+adaptations:
+  - {book: "Wool", screen: "Silo"}
+  - {series: "Foundation", screen: "Foundation"}
+
+# One name per series when apps disagree.
+series_aliases:
+  Robots: Robot
+  Robot Daneel Olivaw: Robot
+
+# Shared worlds: several series + standalones in one reading order.
+universes:
+  - name: Foundation Universe
+    author: Isaac Asimov
+    order:                         # one title per line (titles may contain commas)
+      - The End of Eternity
+      - I, Robot
+      - The Caves of Steel
+      - The Naked Sun
+      - The Robots of Dawn
+      - Robots and Empire
+      - The Currents of Space
+      - The Stars, Like Dust
+      - Pebble in the Sky
+      - Prelude to Foundation
+      - Forward the Foundation
+      - Foundation
+      - Foundation and Empire
+      - Second Foundation
+      - Foundation's Edge
+      - Foundation and Earth
+    series: [Robot, Galactic Empire, Foundation]
+
+# Extra log files to show on the Activity page (paths inside the container).
+# activity_logs:
+#   my_script: /src/logs/my-script.log
+
+# Optional: hand-made audiobook<->ebook pairs, JSON list of {"asin": "<Audible ASIN>", "calibre_id": <Calibre book id>}.
+# sources:
+#   manual_pairs: /config/manual-pairs.json

@@ -1,0 +1,24 @@
+# Omnarr — minimal setup. Everything else (which apps, addresses, API keys) is done in
+# the web UI's setup screen on first start; nothing needs to go in a config file.
+name: omnarr
+services:
+  omnarr:
+    image: ghcr.io/OWNER/omnarr:latest
+    container_name: omnarr
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      - PUID=1000            # optional: run as this user (must be able to read any database mounts below)
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./data:/data         # Omnarr's own index, settings and cover cache — back this up
+      # - ./config:/config:ro  # optional config.yml (adaptations, universes, series aliases)
+
+      # ── Optional: apps Omnarr reads as database files (they have no usable API) ──
+      # Mount READ-ONLY. Omnarr never writes to another app.
+      # - /path/to/calibre-library:/src/calibre:ro             # Calibre: folder with metadata.db
+      # - /path/to/storyteller/data:/src/storyteller:ro        # Storyteller: folder with storyteller.db
+      # - /path/to/storyteller/library:/src/storyteller-library:ro
+      # - /path/to/bookbridge:/src/bookbridge:ro               # BookBridge: folder with database.db

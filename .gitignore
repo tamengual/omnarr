@@ -1,0 +1,24 @@
+# Personal / local-only — never commit
+.private/
+CLAUDE.local.md
+config.yml
+.env
+*.env
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+*.db.tmp
+data/
+thumbs/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# local tooling
+.claude/

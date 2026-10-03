@@ -1,0 +1,10 @@
+Omnarr
+Copyright (C) 2026 Omnarr contributors
+Licensed under the GNU General Public License v3.0 (see LICENSE).
+
+This project bundles third-party software:
+
+hls.js 1.6.13 (app/static/vendor/hls.min.js)
+  https://github.com/video-dev/hls.js
+  Licensed under the Apache License, Version 2.0
+  https://www.apache.org/licenses/LICENSE-2.0

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#10151d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f2eb" media="(prefers-color-scheme: light)">
+  <title>Omnarr</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23d85d38'/%3E%3Cpath d='M6 14v11h20V14l-3-6H9zM6 14h20M11 8v6m10-6v6M14 14v5h4v-5' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="auth" class="auth" hidden>
+    <div class="auth-art" aria-hidden="true">
+      <span class="auth-mark"><svg viewBox="0 0 32 32"><path d="M6 14v11h20V14l-3-6H9zM6 14h20M11 8v6m10-6v6M14 14v5h4v-5"/></svg></span>
+      <p>Every story.<br>One shelf.</p>
+    </div>
+    <form id="auth-form" class="auth-card">
+      <div class="eyebrow">Your private collection</div>
+      <h1>Omnarr</h1>
+      <p id="auth-msg" class="auth-copy">Sign in to browse your library.</p>
+      <label class="field"><span>Password</span><input id="auth-pw" type="password" autocomplete="current-password" required minlength="8"></label>
+      <label class="field" id="auth-confirm" hidden><span>Confirm password</span><input id="auth-pw2" type="password" autocomplete="new-password" minlength="8"></label>
+      <button type="submit" id="auth-btn" class="primary-button">Sign in</button>
+      <p class="err" id="auth-err" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header class="site-header">
+      <div class="header-main">
+        <a class="brand" href="#" id="home" aria-label="Omnarr home"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14v11h20V14l-3-6H9zM6 14h20M11 8v6m10-6v6M14 14v5h4v-5"/></svg></span><span>Omnarr</span></a>
+        <div class="searchbox">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+          <label for="q" class="sr-only">Search your media</label>
+          <input id="q" type="search" placeholder="Search titles, creators, series…" autocomplete="off" enterkeyhint="search">
+          <kbd aria-hidden="true">/</kbd>
+        </div>
+        <div class="header-actions">
+        <button class="header-action private-trigger" id="private-toggle" type="button" aria-label="Private collection" aria-haspopup="dialog" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg><span>Private</span></button>
+        <button class="header-action filter-trigger" id="filters-toggle" type="button" aria-controls="filters" aria-expanded="false">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10m-7 6h4"/></svg><span>Filters</span><span class="filter-total" id="filter-total" hidden></span>
+        </button>
+        </div>
+      </div>
+      <nav class="kinds" id="kinds" aria-label="Library navigation"></nav>
+    </header>
+
+    <button class="filter-scrim" id="filter-scrim" aria-label="Close filters" tabindex="-1" hidden></button>
+    <div class="layout">
+      <aside class="filters" id="filters" aria-label="Search filters" aria-hidden="false">
+        <div class="filters-head">
+          <div><div class="eyebrow">Refine your shelf</div><h2>Filters</h2></div>
+          <button class="icon-button filters-close" id="filters-close" type="button" aria-label="Close filters"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+
+        <div class="filter-scroll">
+          <section class="filter-section">
+            <h3>Available as</h3>
+            <div class="chips action-chips" id="has"></div>
+            <p class="hint">Selecting more than one finds works available in every selected format.</p>
+          </section>
+          <section class="filter-section"><h3>Status</h3><div class="chips" id="f-status"></div></section>
+          <section class="filter-section" id="availability-filter"><h3>Screen availability</h3><div class="chips" id="f-availability"></div></section>
+          <details class="filter-section" open><summary>Genre</summary><div class="chips scroll" id="f-genre"></div></details>
+          <details class="filter-section">
+            <summary>People &amp; collections</summary>
+            <div class="field-stack">
+              <label class="field"><span id="author-label">Author / company</span><input id="author" placeholder="Any author or company"></label>
+              <label class="field"><span>Narrator</span><input id="narrator" placeholder="Any narrator"></label>
+              <label class="field"><span>Series</span><input id="series" placeholder="Series name"></label>
+              <label class="field"><span>Universe</span><input id="universe" placeholder="Exact universe name"></label>
+            </div>
+          </details>
+          <details class="filter-section">
+            <summary>Year &amp; length</summary>
+            <div class="field-stack">
+              <span class="field-label">Release year</span>
+              <div class="field-row"><label class="sr-only" for="year_min">Earliest year</label><input id="year_min" type="number" inputmode="numeric" placeholder="From"><label class="sr-only" for="year_max">Latest year</label><input id="year_max" type="number" inputmode="numeric" placeholder="To"></div>
+              <div class="chips decade-chips" id="f-decade"></div>
+              <span class="field-label">Length in hours</span>
+              <div class="field-row"><label class="sr-only" for="dur_min">Minimum hours</label><input id="dur_min" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Min"><label class="sr-only" for="dur_max">Maximum hours</label><input id="dur_max" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Max"></div>
+              <label class="field"><span>Minimum rating</span><select id="rating_min"><option value="">Any rating</option><option value="4.5">4.5+</option><option value="4">4.0+</option><option value="3.5">3.5+</option><option value="3">3.0+</option></select></label>
+            </div>
+          </details>
+          <details class="filter-section">
+            <summary>Library &amp; app</summary>
+            <h4>Library</h4><div class="chips" id="f-library"></div>
+            <h4>Source app</h4><div class="chips" id="f-source"></div>
+          </details>
+          <details class="filter-section">
+            <summary>More options</summary>
+            <div class="check-stack">
+              <label class="check"><input type="checkbox" id="in_series"><span>Part of a series</span></label>
+              <label class="check"><input type="checkbox" id="linked"><span>Has a book/screen adaptation</span></label>
+              <label class="check"><input type="checkbox" id="hidden"><span>Include “not mine” books</span></label>
+              <label class="field"><span>Recently added</span><select id="added_days"><option value="">Any time</option><option value="7">Past week</option><option value="30">Past month</option><option value="365">Past year</option></select></label>
+            </div>
+          </details>
+          <section class="filter-utility">
+            <button class="text-button" id="clear" type="button">Clear all filters</button>
+            <div class="library-status" id="index-status" aria-live="polite"></div>
+            <button class="text-button" id="reindex" type="button">Refresh library</button>
+            <button class="text-button muted-button" id="logout" type="button">Sign out</button>
+          </section>
+        </div>
+      </aside>
+
+      <main class="content" id="content">
+        <div id="private-banner" class="private-banner" hidden><span id="private-until"></span><div><button id="private-exit" class="text-button muted-button" type="button">Back to library</button><button id="private-lock" class="text-button" type="button">Lock now</button></div></div>
+        <p id="private-notice" class="private-notice hint" role="status" hidden></p>
+        <section id="home-view" class="home-view" aria-labelledby="home-title" hidden>
+          <div class="hero">
+            <div class="hero-copy"><div class="eyebrow">Your whole collection</div><h1 id="home-title">Find the next world<br>to fall into.</h1><p>Books, listening, read-alongs, comics, movies, television, and games — connected without the clutter.</p></div>
+            <div class="hero-orbit" aria-hidden="true"><span>READ</span><span>LISTEN</span><span>WATCH</span></div>
+          </div>
+          <div id="home-rows" class="home-rows"></div>
+        </section>
+
+        <section id="activity-view" class="activity-view" aria-labelledby="activity-title" hidden>
+          <div class="results-head">
+            <div><div class="eyebrow">Across your apps</div><h1 id="activity-title" tabindex="-1">Activity</h1><p class="hint">Downloads, requests, and processing in one place.</p></div>
+            <button id="activity-refresh" class="secondary-button" type="button">Refresh</button>
+          </div>
+          <p id="activity-status" class="hint" role="status"></p>
+          <div id="activity-body" class="activity-sections"></div>
+        </section>
+
+        <section id="settings-view" class="settings-view" aria-labelledby="settings-title" hidden>
+          <div class="results-head">
+            <div><div class="eyebrow">Make Omnarr yours</div><h1 id="settings-title" tabindex="-1">Settings</h1><p class="hint">Connect and manage the apps behind your library.</p></div>
+            <button id="settings-done" class="secondary-button" type="button">Back to library</button>
+          </div>
+          <p id="settings-welcome" class="settings-welcome" hidden>Connect the apps you use — everything is optional; you can add more later.</p>
+          <section class="settings-options" aria-labelledby="settings-private-label">
+            <label class="check" for="settings-adult"><input id="settings-adult" type="checkbox" role="switch" aria-describedby="settings-private-help" disabled><span id="settings-private-label">Private (adult) section</span></label>
+            <p id="settings-private-help" class="hint">Show Private and its app connections. The collection stays PIN-locked; turning this off hides it without forgetting your connections.</p>
+            <p id="settings-option-message" class="connection-message" role="status" aria-live="polite"></p>
+          </section>
+          <h2>Connections</h2>
+          <p id="settings-status" class="connection-message" role="status" aria-live="polite"></p>
+          <button id="settings-retry" class="secondary-button" type="button" hidden>Try again</button>
+          <div id="settings-connections" class="connection-groups"></div>
+        </section>
+
+        <section id="results-view" class="results-view" aria-labelledby="results-title" hidden>
+          <div class="results-head">
+            <div><div class="eyebrow">Library search</div><h1 id="results-title">Browse everything</h1></div>
+            <div class="sort-wrap">
+              <label for="sort">Sort by</label>
+              <select id="sort"><option value="">Best match</option><option value="title">Title</option><option value="author">Author</option><option value="series">Series order</option><option value="universe">Universe order</option><option value="added">Recently added</option><option value="recent">Recently played</option><option value="year">Release year</option><option value="duration">Length</option><option value="rating">Rating</option><option value="progress">Progress</option></select>
+              <button class="icon-button" id="order" type="button" title="Reverse sort order" aria-label="Reverse sort order"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 5v14m0 0-3-3m3 3 3-3M16 19V5m0 0-3 3m3-3 3 3"/></svg></button>
+            </div>
+          </div>
+          <div class="result-bar"><span id="count" aria-live="polite"></span><div class="active-filters" id="active-filters" aria-label="Active filters"></div></div>
+          <div class="grid" id="grid" aria-live="polite"></div>
+          <div class="more"><button id="more" class="secondary-button" type="button" hidden>Show more</button></div>
+        </section>
+      </main>
+    </div>
+    <dialog id="private-dialog" class="pin-dialog" aria-labelledby="pin-title" aria-describedby="pin-copy">
+      <form id="pin-form" class="pin-form">
+        <div class="pin-heading"><h2 id="pin-title">Unlock Private</h2><button id="pin-close" class="icon-button" type="button" aria-label="Close PIN entry"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+        <p id="pin-copy" class="hint">Enter your PIN to open your private collection.</p>
+        <label class="field"><span>PIN</span><input id="pin" type="password" inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12" autocomplete="off" required aria-describedby="pin-error"></label>
+        <label class="field" id="pin-confirm-field" hidden><span>Confirm PIN</span><input id="pin-confirm" type="password" inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12" autocomplete="off"></label>
+        <p id="pin-error" class="err" role="alert"></p>
+        <button id="pin-submit" class="primary-button" type="submit">Unlock</button>
+      </form>
+    </dialog>
+    <dialog id="detail" aria-label="Media details"><div id="detail-body"></div></dialog>
+  </div>
+  <script src="player.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
