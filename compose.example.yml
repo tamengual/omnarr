@@ -3,7 +3,7 @@
 name: omnarr
 services:
   omnarr:
-    image: ghcr.io/OWNER/omnarr:latest
+    image: ghcr.io/tamengual/omnarr:latest
     container_name: omnarr
     restart: unless-stopped
     ports:

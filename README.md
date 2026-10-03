@@ -56,7 +56,7 @@ Every integration is optional. Connect the ones you use.
 # compose.yml
 services:
   omnarr:
-    image: ghcr.io/OWNER/omnarr:latest
+    image: ghcr.io/tamengual/omnarr:latest
     container_name: omnarr
     restart: unless-stopped
     ports: ["8765:8765"]
