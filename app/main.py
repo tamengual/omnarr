@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, config as config_mod, identity, indexer, live, normalize, play, requests_, search, wanted
+from . import accounts, config as config_mod, identity, indexer, live, normalize, play, playstate, requests_, search, wanted
 from .connectors import abs as abs_c, arr, calibre, jellyfin, komga, registry, romm, stash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -135,6 +135,10 @@ async def revalidate_ui(request: Request, call_next):
     response = await call_next(request)
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
+    # basic hardening for installs reachable from the internet (e.g. Tailscale Funnel)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
     return response
 
 
@@ -210,7 +214,7 @@ def _new_session(request, response, account_id):
         con.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
     con.close()
     response.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
-                        path=_base_path(request) + "/")
+                        path=_base_path(request) + "/", secure=request.url.scheme == "https")
 
 
 @app.post("/api/auth/setup")
@@ -384,7 +388,12 @@ async def api_invites_create(request: Request):
     -> {url}. link_base is the address the inviter is using (the invitee must be able to reach it)."""
     body = await request.json()
     me = _account(request)
-    link_base = (body.get("link_base") or "").split("#")[0]
+    con = state()
+    try:
+        public = (_setting(con, "public_url") or "").strip()
+    finally:
+        con.close()
+    link_base = public or (body.get("link_base") or "").split("#")[0]   # a set public address wins
     if not link_base.startswith(("http://", "https://")):
         raise HTTPException(400, "link_base (the Omnarr address to put in the link) is required")
     con = state()
@@ -655,6 +664,9 @@ def setup_delete(app_key: str):
 @app.post("/api/setup/options")
 async def setup_options(request: Request):
     body = await request.json()
+    pub = (body.get("public_url") or "").strip()
+    if pub and not pub.startswith(("https://", "http://")):
+        raise HTTPException(400, "The public address must start with https:// (or http://)")
     for key in ("upload_dir", "upload_audio_dir"):      # validate before saving anything
         path = (body.get(key) or "").strip()
         if path and not (os.path.isdir(path) and os.access(path, os.W_OK)):
@@ -668,6 +680,8 @@ async def setup_options(request: Request):
                 con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, (body[key] or "").strip()))
         if "upload_max_mb" in body:
             con.execute("INSERT OR REPLACE INTO settings VALUES ('upload_max_mb', ?)", (str(max(1, int(body["upload_max_mb"]))),))
+        if "public_url" in body:
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('public_url', ?)", (pub.rstrip("/") + "/" if pub else "",))
     con.close()
     return {"ok": True, "options": {"adult_enabled": _adult_enabled(), **_upload_settings()}}
 
@@ -870,6 +884,9 @@ async def api_action(request: Request):
         raise HTTPException(502, str(e))
 
 
+_episode_series = {}                                   # Jellyfin episode id -> series id (for progress)
+
+
 # ── in-app playback ──────────────────────────────────────────────────────────
 @app.get("/api/play/video/{item_id}")
 def api_play_video(item_id: str):
@@ -881,9 +898,12 @@ def api_play_video(item_id: str):
         info = play.video_info(cfg, item_id, uid or live._jf_user(cfg, owner=True))
     except Exception as e:
         raise HTTPException(502, f"Jellyfin: {type(e).__name__}: {e}")
-    info["progress_sync"] = bool(uid)
-    if not uid:
-        info["resume"] = 0                             # never someone else's position
+    if not uid:                                        # never someone else's position: use your own
+        info["resume"], _ = playstate.get(STATE, identity.account_id.get(), "jellyfin", item_id)
+    if info.get("series_id"):
+        _episode_series[item_id] = info["series_id"]
+    info["progress_sync"] = True                       # always saved in Omnarr
+    info["app_sync"] = bool(uid)                       # …and in Jellyfin when you have an identity there
     return info
 
 
@@ -893,7 +913,10 @@ def api_play_audio(item_id: str):
     info = play.audio_info(cfg, item_id) if cfg.source("abs") else None
     if not info:
         raise HTTPException(404, "Not found")
-    info["progress_sync"] = bool(play.abs_token(cfg))
+    if not play.abs_token(cfg):
+        info["resume"], _ = playstate.get(STATE, identity.account_id.get(), "abs", item_id)
+    info["progress_sync"] = True
+    info["app_sync"] = bool(play.abs_token(cfg))
     return info
 
 
@@ -903,15 +926,19 @@ async def api_play_progress(request: Request):
     b = await request.json()
     try:
         pos, dur = float(b.get("position") or 0), float(b.get("duration") or 0)
-        if b.get("source") == "jellyfin":
-            uid = live._jf_user(cfg)
-            if not uid:
-                return {"ok": False, "reason": "Link your Jellyfin user in Settings → My accounts to save progress"}
-            ok = play.video_progress(cfg, uid, b["item_id"], pos, dur, bool(b.get("finished")))
-        elif b.get("source") == "abs":
-            ok = play.audio_progress(cfg, b["item_id"], pos, dur, bool(b.get("finished")))
-        else:
+        if b.get("source") not in ("jellyfin", "abs"):
             raise HTTPException(400, "source must be jellyfin or abs")
+        # always kept in Omnarr (so a single Omnarr account is enough)…
+        playstate.record(STATE, identity.account_id.get(), b["source"], b["item_id"], pos, dur,
+                         bool(b.get("finished")), parent_id=_episode_series.get(b["item_id"]))
+        ok = True
+        # …and written to the app too when this person has an identity there
+        if b["source"] == "jellyfin":
+            uid = live._jf_user(cfg)
+            if uid:
+                ok = play.video_progress(cfg, uid, b["item_id"], pos, dur, bool(b.get("finished")))
+        elif play.abs_token(cfg):
+            ok = play.audio_progress(cfg, b["item_id"], pos, dur, bool(b.get("finished")))
     except HTTPException:
         raise
     except Exception as e:
@@ -1024,7 +1051,7 @@ def _upload_settings():
     con = state()
     try:
         return {"upload_dir": _setting(con, "upload_dir") or "", "upload_audio_dir": _setting(con, "upload_audio_dir") or "",
-                "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048)}
+                "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048), "public_url": _setting(con, "public_url") or ""}
     finally:
         con.close()
 

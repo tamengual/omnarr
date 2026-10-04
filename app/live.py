@@ -77,6 +77,12 @@ def _jf_episodes(cfg, series_id):
         ud = it.get("UserData") or {}
         out[(s, e)] = {"jellyfin_id": it["Id"], "watched": bool(ud.get("Played")),
                        "position": (ud.get("PlaybackPositionTicks") or 0) / 1e7}
+    from . import identity, playstate                 # Omnarr's own record for this person
+    mine = playstate.for_parent(cfg.state_path, identity.account_id.get(), series_id)
+    for w in out.values():
+        pos, fin = mine.get(w["jellyfin_id"], (0, False))
+        w["watched"] = w["watched"] or fin
+        w["position"] = max(w["position"], pos)
     return out
 
 
@@ -163,7 +169,10 @@ def movie_detail(cfg, editions):
             with _jf(cfg) as c:
                 it = c.get(f"/Users/{uid or _jf_user(cfg, owner=True)}/Items/{jf['source_id']}").json()
             ud = (it.get("UserData") or {}) if uid else {}
-            out.update(watched=bool(ud.get("Played")), position=(ud.get("PlaybackPositionTicks") or 0) / 1e7,
+            from . import identity, playstate
+            pos, fin = playstate.get(cfg.state_path, identity.account_id.get(), "jellyfin", jf["source_id"])
+            out.update(watched=bool(ud.get("Played")) or fin,
+                       position=max((ud.get("PlaybackPositionTicks") or 0) / 1e7, pos),
                        runtime=(it.get("RunTimeTicks") or 0) / 1e7)
         except Exception as e:
             log.warning("jellyfin movie failed: %s", e)

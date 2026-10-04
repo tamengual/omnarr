@@ -12,6 +12,7 @@ Members who haven't linked anything simply have no progress (never the owner's).
 import json
 import logging
 import sqlite3
+import time
 
 import httpx
 
@@ -88,6 +89,18 @@ def build(cfg, state_path, editions):
     if not accounts:
         return []
     jf_cache, abs_cache = {}, {}
+    from . import playstate
+    native = {}                                   # account -> {(source, id): (pct, finished, last)}
+    episodes = {}                                 # account -> {series id: [finished count, any started, last]}
+    for r in playstate.all_rows(state_path):
+        pct = min(1.0, r["position"] / r["duration"]) if r["duration"] else None
+        last = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(r["updated"] or 0))
+        native.setdefault(r["account_id"], {})[(r["source"], r["item_id"])] = (pct, bool(r["finished"]), last)
+        if r["parent_id"]:
+            e = episodes.setdefault(r["account_id"], {}).setdefault(r["parent_id"], [0, False, ""])
+            e[0] += int(bool(r["finished"]))
+            e[1] = e[1] or (r["position"] or 0) > 0
+            e[2] = max(e[2], last)
     rows = []
     for a in accounts:
         admin = a["role"] == "admin"
@@ -118,6 +131,15 @@ def build(cfg, state_path, editions):
                 got = (u.progress, u.finished, u.extra.get("last_listened", "")) if admin else None
             else:
                 got = None
+            mine = native.get(a["id"], {}).get((u.source, u.source_id))
+            if mine is None and u.source == "jellyfin" and u.kind == "show":
+                ep = episodes.get(a["id"], {}).get(u.source_id)
+                total = (u.extra or {}).get("episodes") or 0
+                if ep:
+                    mine = ((ep[0] / total) if total else (0.01 if ep[1] else None), bool(total and ep[0] >= total), ep[2])
+            if mine:
+                got = mine if not got else (max(got[0] or 0, mine[0] or 0) if (got[0] or mine[0]) is not None else None,
+                                            bool(got[1] or mine[1]), max(got[2] or "", mine[2] or ""))
             if not got or (got[0] is None and not got[1]):
                 continue
             cur = per_work.setdefault(wid, [None, False, ""])

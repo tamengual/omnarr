@@ -84,7 +84,7 @@ def video_info(cfg, item_id, user_id):
     return {"type": "video", "mode": mode, "url": url, "play_session_id": psid, "item_id": item_id,
             "title": title, "duration": (item.get("RunTimeTicks") or 0) / 1e7,
             "resume": (ud.get("PlaybackPositionTicks") or 0) / 1e7, "subtitles": subs,
-            "poster": f"api/cover/jellyfin:{item.get('SeriesId') or item_id}"}
+            "poster": f"api/cover/jellyfin:{item.get('SeriesId') or item_id}", "series_id": item.get("SeriesId")}
 
 
 def video_progress(cfg, user_id, item_id, position, duration, finished):

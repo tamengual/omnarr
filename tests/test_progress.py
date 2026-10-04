@@ -30,6 +30,23 @@ def test_build_rows_per_account(tmp_path, monkeypatch):
     assert not any(a == 3 for a, _ in rows)                   # unlinked member: nothing
 
 
+def test_omnarr_own_progress_counts(tmp_path, monkeypatch):
+    """A member with no linked apps still gets progress from what they played in Omnarr."""
+    from app import playstate
+    state = tmp_path / "state.db"
+    con = sqlite3.connect(state)
+    con.execute("CREATE TABLE accounts (id INTEGER, role TEXT, jellyfin_user TEXT, abs_api_key TEXT)")
+    con.execute("INSERT INTO accounts VALUES (3, 'member', NULL, NULL)")
+    con.commit(); con.close()
+    playstate.record(str(state), 3, "abs", "abs2", 450, 1000, False)
+    playstate.record(str(state), 3, "jellyfin", "ep1", 2700, 2700, True, parent_id="show9")
+    show = Unit(source="jellyfin", source_id="show9", kind="show", format="series", title="Korra", extra={"episodes": 4})
+    editions = [("w-silo", _unit("abs", "abs2"), ""), ("w-korra", show, "")]
+    rows = {(a, w): (p, s) for a, w, p, s, _ in progress.build(None, str(state), editions)}
+    assert rows[(3, "w-silo")] == (0.45, "in_progress")
+    assert rows[(3, "w-korra")] == (0.25, "in_progress")          # 1 of 4 episodes watched
+
+
 def test_search_reads_own_progress(tmp_path):
     idx = tmp_path / "index.db"
     con = sqlite3.connect(idx)

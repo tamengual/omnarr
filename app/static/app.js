@@ -999,6 +999,7 @@ function fillUploadOptions(options) {
   form.elements.upload_dir.value = options.upload_dir || "";
   form.elements.upload_audio_dir.value = options.upload_audio_dir || "";
   form.elements.upload_max_mb.value = options.upload_max_mb ?? 2048;
+  form.elements.public_url.value = options.public_url || "";
 }
 
 $("#upload-options-form").addEventListener("submit", async (event) => {
@@ -1006,7 +1007,7 @@ $("#upload-options-form").addEventListener("submit", async (event) => {
   if (!isAdmin() || settingsBusy || !settingsController || !uploadOptionsReady) return;
   const form = event.currentTarget;
   const controller = settingsController;
-  const values = { upload_dir: form.elements.upload_dir.value.trim(), upload_audio_dir: form.elements.upload_audio_dir.value.trim(), upload_max_mb: Number(form.elements.upload_max_mb.value) };
+  const values = { upload_dir: form.elements.upload_dir.value.trim(), upload_audio_dir: form.elements.upload_audio_dir.value.trim(), upload_max_mb: Number(form.elements.upload_max_mb.value), public_url: form.elements.public_url.value.trim() };
   settingsPending(true);
   connectionMessage($("#upload-options-message"), "Saving upload folders…", "busy");
   try {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 — 2026-10-04
+
+- **One Omnarr account is enough.** Playback position, finished items and "Continue" are now
+  saved by Omnarr itself for everyone. Nobody needs their own Jellyfin or Audiobookshelf
+  account. Linking one (Settings → My account) is optional and also keeps it in sync there.
+  Watched episodes and movies on a show's page come from the same record.
+- **Ready for a public address** (e.g. Tailscale Funnel or a reverse proxy):
+  - secure cookies over HTTPS;
+  - security headers, and "don't index" for search engines;
+  - a *Public address* setting that invitation links always use;
+  - docs for `FORWARDED_ALLOW_IPS`, so the sign-in lockout counts each visitor separately.
+
 ## 0.3.0 — 2026-10-03
 
 **Accounts, sharing and files.** One release covering what was planned as 0.3 and 0.4.

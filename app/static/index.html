@@ -142,19 +142,20 @@
             <p id="settings-option-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
           <section id="settings-uploads" class="settings-options" aria-labelledby="settings-uploads-title" hidden>
-            <h2 id="settings-uploads-title">Uploads</h2>
+            <h2 id="settings-uploads-title">Uploads and sharing</h2>
             <p id="upload-folders-help" class="hint">These are paths inside Omnarr's container — mount the folders read-write first. Leave empty to turn uploads off.</p>
             <form id="upload-options-form" class="password-form" aria-describedby="upload-folders-help">
               <label class="field">Books &amp; comics drop-off folder (e.g. your Calibre-Web-Automated ingest)<input name="upload_dir" autocomplete="off" spellcheck="false" disabled></label>
               <label class="field">Audiobooks folder (inside an Audiobookshelf library)<input name="upload_audio_dir" autocomplete="off" spellcheck="false" disabled></label>
               <label class="field">Max size (MB)<input name="upload_max_mb" type="number" min="1" step="1" inputmode="numeric" required disabled></label>
+              <label class="field">Public address for invitation links (optional, e.g. https://media.example.com/)<input name="public_url" type="url" autocomplete="off" spellcheck="false" placeholder="Uses the address you're on when empty" disabled></label>
               <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save</button></div>
             </form>
             <p id="upload-options-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
           <section class="settings-options" aria-labelledby="my-account-title">
             <h2 id="my-account-title">My account</h2>
-            <p class="hint">Link your own Jellyfin user and Audiobookshelf API key so playback and progress are yours.</p>
+            <p class="hint">Your progress is saved in Omnarr automatically. Optional: if you also have your own Jellyfin user or Audiobookshelf account, link it here to keep your progress in sync there too.</p>
             <p id="account-identity" class="hint" hidden>Until you link your own, you use the server's accounts from Settings → Connections.</p>
             <form id="my-account-form" class="password-form">
               <label class="field">Jellyfin username<input name="jellyfin_user" autocomplete="off" disabled></label>

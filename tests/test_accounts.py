@@ -143,6 +143,21 @@ def test_invite_link_creates_account_once(app2, monkeypatch):
     assert [i["status"] for i in admin.get("/api/accounts/invites").json()["invites"]] == ["used"]
 
 
+def test_public_address_and_https_hardening(app2):
+    main, admin, member, sam = app2
+    assert admin.post("/api/setup/options", json={"public_url": "ftp://nope"}).status_code == 400
+    assert admin.post("/api/setup/options", json={"public_url": "https://media.example.com"}).status_code == 200
+    r = admin.post("/api/accounts/invites", json={"link_base": "http://192.168.1.5:8765/"})
+    assert r.json()["url"].startswith("https://media.example.com/#invite=")          # the public address wins
+    h = admin.get("/api/health").headers
+    assert h["x-content-type-options"] == "nosniff" and "noindex" in h["x-robots-tag"]
+    secure = TestClient(main.app, base_url="https://media.example.com")
+    login = secure.post("/api/auth/login", json={"username": "sam", "password": "member-pass-1"})
+    assert "secure" in login.headers["set-cookie"].lower()
+    plain = TestClient(main.app).post("/api/auth/login", json={"username": "sam", "password": "member-pass-1"})
+    assert "secure" not in plain.headers["set-cookie"].lower()
+
+
 def test_invite_email(app2, monkeypatch):
     main, admin, member, sam = app2
     r = admin.post("/api/accounts/invites", json={"link_base": "https://m.example/", "email": "a@example.com"})
@@ -162,13 +177,17 @@ def test_identity_reaches_endpoints(app2, monkeypatch):
     main.cfg.save_connection("abs", {"url": "http://abs.example", "api_key": "OWNER-KEY"})
     monkeypatch.setattr(main.play, "audio_info", lambda cfg, item_id: {"type": "audio"})
     monkeypatch.setattr(main, "_wanted_tick", lambda: None, raising=False)
-    assert member.get("/api/play/audio/x").json()["progress_sync"] is False
-    assert admin.get("/api/play/audio/x").json()["progress_sync"] is True
+    m, a = member.get("/api/play/audio/x").json(), admin.get("/api/play/audio/x").json()
+    assert m["progress_sync"] is True and m["app_sync"] is False          # kept in Omnarr only
+    assert a["progress_sync"] is True and a["app_sync"] is True
     seen = []
     monkeypatch.setattr(main.play, "audio_progress", lambda cfg, *a: seen.append(main.play.abs_token(cfg)) or True)
-    member.post("/api/play/progress", json={"source": "abs", "item_id": "x", "position": 5, "duration": 10})
+    member.post("/api/play/progress", json={"source": "abs", "item_id": "x", "position": 300, "duration": 1000})
     admin.post("/api/play/progress", json={"source": "abs", "item_id": "x", "position": 5, "duration": 10})
-    assert seen == [None, "OWNER-KEY"]
+    assert seen == ["OWNER-KEY"]                                             # the member never writes as the owner
+    assert member.get("/api/play/audio/x").json()["resume"] == 300          # …but resumes from Omnarr's record
+    from app import playstate
+    assert playstate.get(main.STATE, sam, "abs", "x") == (300, False)
     admin.patch(f"/api/accounts/{sam}", json={})
     member.post("/api/me", json={"abs_api_key": ""})              # nothing linked still means no key
 

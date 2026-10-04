@@ -162,9 +162,10 @@ you've connected an *Email* server in Connections).
 
 With every switch off, a person is a **guest**: they can browse and play, and that's all.
 
-**Their own progress:** each person links their own Jellyfin user and Audiobookshelf API key
-in **Settings → My account**. Playback progress is then saved to *their* accounts, and their
-"Continue" row is theirs. Until they link them, they can still play, but nothing is saved.
+**One account is all they need.** Whatever someone plays in Omnarr (position, finished, their
+"Continue" row) is saved in Omnarr under their account. They never have to create Jellyfin
+or Audiobookshelf accounts. If someone already has their own there, they can link it in
+**Settings → My account** to keep progress in sync with those apps too.
 
 **Uploads** need writable folders. Mount them into the container and set them in Settings:
 
@@ -175,8 +176,18 @@ in **Settings → My account**. Playback progress is then saved to *their* accou
 ```
 
 **Sharing outside your home network:** Omnarr has no built-in remote access. Put it behind
-something that does: a VPN such as Tailscale (sharing just Omnarr with someone's own
-Tailscale account is the simplest safe option), or a reverse proxy with HTTPS.
+something that does:
+
+- **Tailscale sharing** keeps it private; each person installs Tailscale.
+- **A public HTTPS address** needs no app for them, e.g. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
+  (`tailscale funnel --bg --https=443 http://127.0.0.1:8765`) or a reverse proxy.
+  - Set **Settings → Uploads and sharing → Public address**, so invitation links use it.
+  - Tell Omnarr to trust the proxy, so it sees each visitor's real address (for the sign-in
+    lockout) and knows the connection is HTTPS (for secure cookies). Set the environment
+    variable `FORWARDED_ALLOW_IPS` to the address the proxy connects from. With Docker's
+    default bridge network that's usually `172.17.0.1`.
+  - Omnarr limits repeated sign-in attempts and invitation links are single-use. Still,
+    use strong passwords and give the *request* and *upload* switches only to people you trust.
 
 ### Security notes
 
