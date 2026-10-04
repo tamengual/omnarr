@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.4 — 2026-10-03
+
+- **Request related books and comics.** Books and comics in a work's related list now have a
+  Request button, like movies and shows. Books ask ebook or audiobook; comics request in one
+  click. Omnarr then keeps looking (Shelfmark) until a good copy arrives, retries failed
+  downloads with the next-best copy, and searches again every few days. "Choose a copy myself"
+  is there for picking by hand.
+- New **comic** format for the keep-looking list. It's searched as an ebook and accepts
+  cbz/cbr/cb7/epub/pdf, and it counts as arrived once it shows up in Komga or Calibre.
+- Fixed: cancelling the copy picker could throw an error.
+
 ## 0.2.3 — 2026-10-03
 
 - Related shows and movies with a TMDB id match your library only by that id. The 2010

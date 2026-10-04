@@ -533,7 +533,7 @@ def api_work_requests(wid: str, request: Request):
             item.update(status="not_requested" if requests_.romarr_enabled(cfg) else "no_requester",
                         url=f"https://www.igdb.com/games/{a['igdb']}" if a.get("igdb") else a["url"])
         elif a["kind"] in ("book", "comic"):
-            item["status"] = "not_owned"
+            item["status"] = "not_requested" if requests_.shelfmark_enabled(cfg) else "no_requester"
         out["adaptations"].append(item)
     return out
 
@@ -710,15 +710,21 @@ def api_request_search(q: str):
 
 
 @app.get("/api/request/book/candidates")
-def api_book_candidates(work: str, format: str, request: Request):
-    if format not in BOOK_FORMATS:
-        raise HTTPException(400, "format must be ebook or audiobook")
-    w = search.work(INDEX, work, _adult_ok(_session(request)))
-    if not w:
-        raise HTTPException(404, "Not found")
+def api_book_candidates(format: str, request: Request, work: str = "", title: str = "", author: str = ""):
+    """Shelfmark candidates for a library work, or for any title + author (related works)."""
+    if format not in wanted.FORMATS:
+        raise HTTPException(400, "format must be ebook, audiobook or comic")
+    if work:
+        w = search.work(INDEX, work, _adult_ok(_session(request)))
+        if not w:
+            raise HTTPException(404, "Not found")
+    elif title.strip():
+        w = {"title": title.strip(), "authors": [author.strip()] if author.strip() else []}
+    else:
+        raise HTTPException(400, "work or title required")
     query = " ".join(x for x in (w["title"], (w["authors"] or [""])[0]) if x)
     try:
-        cands = requests_.book_candidates(cfg, query, format)
+        cands = requests_.book_candidates(cfg, query, wanted.shelfmark_type(format))
     except Exception as e:
         raise HTTPException(502, f"Shelfmark: {e}")
     # Metadata search ranks by popularity; put the book that IS this one first
@@ -734,10 +740,10 @@ def api_book_candidates(work: str, format: str, request: Request):
 
 @app.get("/api/request/book/releases")
 def api_book_releases(provider: str, book_id: str, format: str):
-    if format not in BOOK_FORMATS:
-        raise HTTPException(400, "format must be ebook or audiobook")
+    if format not in wanted.FORMATS:
+        raise HTTPException(400, "format must be ebook, audiobook or comic")
     try:
-        return {"releases": requests_.book_releases(cfg, provider, book_id, format)}
+        return {"releases": requests_.book_releases(cfg, provider, book_id, wanted.shelfmark_type(format))}
     except Exception as e:
         raise HTTPException(502, f"Shelfmark: {e}")
 
@@ -754,9 +760,10 @@ async def api_book_download(request: Request):
         raise HTTPException(502, f"Shelfmark: {e}")
     # Track it: if this copy fails, the wanted-list job finds another one.
     w = search.work(INDEX, body.get("work") or "", True) if body.get("work") else None
-    fmt = rel.get("content_type") or body.get("format")
+    fmt = body.get("format") if body.get("format") in wanted.FORMATS else rel.get("content_type")
     if fmt in wanted.FORMATS:
-        wanted.add(STATE, (w or {}).get("title") or rel.get("title") or "", ((w or {}).get("authors") or [""])[0],
+        wanted.add(STATE, (w or {}).get("title") or body.get("title") or rel.get("title") or "",
+                   ((w or {}).get("authors") or [body.get("author") or ""])[0],
                    fmt, work_id=(w or {}).get("id"), provider=body.get("provider"), book_id=body.get("book_id"),
                    current=rel.get("source_id"), current_title=rel.get("title"))
     return out
@@ -770,12 +777,15 @@ def api_wanted_list():
 
 @app.post("/api/wanted")
 async def api_wanted_add(request: Request):
-    """{work, format} -> keep looking for that format of this book, picking a copy automatically."""
+    """{work, format} or {title, author, format} -> keep looking for that format of this book
+    (or a book/comic not in the library yet), picking a copy automatically."""
     body = await request.json()
     fmt = body.get("format")
-    w = search.work(INDEX, body.get("work") or "", _adult_ok(_session(request)))
+    w = search.work(INDEX, body.get("work") or "", _adult_ok(_session(request))) if body.get("work") else None
+    if not w and (body.get("title") or "").strip():
+        w = {"id": None, "title": body["title"].strip(), "authors": [(body.get("author") or "").strip()]}
     if not w or fmt not in wanted.FORMATS:
-        raise HTTPException(400, "work and format (ebook|audiobook) required")
+        raise HTTPException(400, "work (or title) and format (ebook|audiobook|comic) required")
     wid = wanted.add(STATE, w["title"], (w["authors"] or [""])[0], fmt, work_id=w["id"],
                      provider=body.get("provider"), book_id=body.get("book_id"))
     threading.Thread(target=_wanted_tick, daemon=True).start()       # first search right away

@@ -716,3 +716,6 @@ dialog::backdrop { background: rgba(6, 10, 14, .72); backdrop-filter: blur(4px);
   .detail-lead { grid-template-columns: 88px minmax(0, 1fr); padding-left: 12px; }
   .detail-content { padding-inline: 12px; }
 }
+
+.related-book-request { grid-column: 1 / -1; margin-top: 10px; }
+.related-book-request .request-card-actions { flex-wrap: wrap; }

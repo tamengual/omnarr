@@ -20,8 +20,15 @@ RETRY_DAYS = 3
 QUICK_RETRY = 15 * 60          # after a failed download, try the next release soon
 STUCK_DAYS = 2                 # "complete" in Shelfmark but not in the library after this -> search again
 
-FORMATS = {"ebook": ["epub", "kepub", "azw3", "mobi"], "audiobook": ["m4b", "m4a", "mp3"]}
-SIZE = {"ebook": (40_000, 150_000_000), "audiobook": (30_000_000, 4_000_000_000)}
+FORMATS = {"ebook": ["epub", "kepub", "azw3", "mobi"], "audiobook": ["m4b", "m4a", "mp3"],
+           "comic": ["cbz", "cbr", "cb7", "epub", "pdf"]}
+SIZE = {"ebook": (40_000, 150_000_000), "audiobook": (30_000_000, 4_000_000_000),
+        "comic": (500_000, 2_000_000_000)}
+
+
+def shelfmark_type(fmt):
+    """Shelfmark only knows ebook/audiobook; comics are searched as ebooks."""
+    return "audiobook" if fmt == "audiobook" else "ebook"
 PACK = re.compile(r"\b(collection|complete|series|saga|trilogy|omnibus|box\s*set|books?\s*\d+\s*(-|–|to|thru)\s*\d+|\d+\s*books)\b", re.I)
 JUNK = re.compile(r"\b(summary|study guide|sparknotes|cliffs?notes|analysis of|workbook)\b", re.I)
 
@@ -51,7 +58,7 @@ def list_all(state_path):
 
 def add(state_path, title, author, fmt, work_id=None, provider=None, book_id=None, current=None, current_title=None):
     if fmt not in FORMATS:
-        raise ValueError("format must be ebook or audiobook")
+        raise ValueError("format must be ebook, audiobook or comic")
     con = _con(state_path)
     try:
         dup = con.execute("""SELECT id FROM wanted_books WHERE format=? AND status<>'done' AND lower(title)=lower(?)""",
@@ -135,7 +142,7 @@ def _resolve_candidate(cfg, row):
     first = re.split(r"\s+/\s+", row["title"])[0]
     # title + author first; then title alone (metadata search sometimes chokes on initials like "F. C.")
     for query in (" ".join(x for x in (first, row["author"]) if x), first):
-        for c in requests_.book_candidates(cfg, query, row["format"]):
+        for c in requests_.book_candidates(cfg, query, shelfmark_type(row["format"])):
             s = normalize.same_book(first, row["author"] or "", c["title"] or "", (c["authors"] or [""])[0])
             if s > score:
                 best, score = c, s
@@ -148,13 +155,16 @@ def _resolve_candidate(cfg, row):
 def _in_library(index_path, row):
     con = search.connect(index_path)
     try:
+        # a comic counts as arrived in Komga (comic) or Calibre (ebook)
+        fmts = ("comic", "ebook") if row["format"] == "comic" else (row["format"],)
         if row["work_id"]:
             r = con.execute("SELECT formats FROM works WHERE id=?", (row["work_id"],)).fetchone()
-            if r and row["format"] in json.loads(r["formats"] or "[]"):
+            if r and set(fmts) & set(json.loads(r["formats"] or "[]")):
                 return True
         sn = normalize.surname(row["author"] or "")
-        for r in con.execute("SELECT title, authors, formats FROM works WHERE kind='book' AND formats LIKE ?",
-                             (f'%"{row["format"]}"%',)):
+        like = " OR ".join("formats LIKE ?" for _ in fmts)
+        for r in con.execute(f"SELECT title, authors, formats FROM works WHERE kind IN ('book','comic') AND ({like})",
+                             [f'%"{f}"%' for f in fmts]):
             a = (json.loads(r["authors"] or "[]") or [""])[0]
             if (not sn or normalize.surname(a) == sn) and normalize.same_book(row["title"], row["author"] or "", r["title"], a) >= normalize.THRESHOLD:
                 return True
@@ -217,7 +227,7 @@ def _search_once(cfg, row, now):
     if not provider:
         return {"last_search": now, "next_search": now + RETRY_DAYS * 86400, "note": "book not found in metadata search yet"}
     tried = set(json.loads(row["tried"] or "[]"))
-    releases = requests_.book_releases(cfg, provider, book_id, row["format"])
+    releases = requests_.book_releases(cfg, provider, book_id, shelfmark_type(row["format"]))
     good, reasons = [], {}
     for r in releases:
         ok, why = acceptable(r, row["title"], row["format"], tried)
@@ -232,7 +242,7 @@ def _search_once(cfg, row, now):
                 "note": f"no acceptable copy yet ({len(releases)} found: {why}); next try in {RETRY_DAYS} days"}
     pick = sorted(good, key=lambda r: _rank(r, row["format"]))[0]
     payload = dict(pick)
-    payload.setdefault("content_type", row["format"])
+    payload.setdefault("content_type", shelfmark_type(row["format"]))
     requests_.book_download(cfg, payload)
     return {**base, "status": "downloading", "current": pick.get("source_id"), "current_title": pick.get("title"),
             "note": f"downloading: {pick.get('title')} ({pick.get('format') or '?'}, {pick.get('size') or '?'})"[:200]}

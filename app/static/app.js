@@ -1181,7 +1181,9 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
       action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${search ? "Available" : "In Jellyfin"}</span>`;
     } else if (["requested", "partial"].includes(item.status)) {
       action = `<button class="request-pill" type="button" disabled>${item.status === "partial" ? "Partly available" : "Requested"}</button>`;
-    } else if (item.status === "not_owned") {
+    } else if (["book", "comic"].includes(item.kind) && item.status === "not_requested") {
+      action = `<button class="secondary-button" type="button" data-book-request aria-expanded="false" aria-label="Request ${esc(title)}">Request</button>`;
+    } else if (["book", "comic"].includes(item.kind)) {
       action = '<span class="request-pill">Not in your library</span>';
     } else if (item.kind === "game" && item.status === "no_requester") {
       action = '<span class="hint">Games can\'t be requested automatically</span>';
@@ -1199,6 +1201,8 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
   $$(".request-card", root).forEach((card, index) => {
     const item = items[index];
     $("[data-open]", card)?.addEventListener("click", () => openWork(item.in_library));
+    const bookButton = $("[data-book-request]", card);
+    if (bookButton) bindRelatedBookRequest(card, bookButton, item);
     const gameButton = $("[data-game-request]", card);
     if (gameButton) {
       const picker = document.createElement("div");
@@ -1250,6 +1254,73 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
         message.textContent = error.message === "login" ? "Sign in to request this title." : error.message;
       }
     });
+  });
+}
+
+// Request a related book or comic that isn't in the library (Shelfmark): pick the format,
+// then let Omnarr keep looking or choose a copy by hand.
+function bindRelatedBookRequest(card, button, item) {
+  const panel = document.createElement("div");
+  panel.className = "related-book-request";
+  panel.hidden = true;
+  panel.id = `related-book-${++gamePickerSequence}`;
+  card.append(panel);
+  button.setAttribute("aria-controls", panel.id);
+  const title = item.label || item.title || "";
+  const target = { title, author: (item.authors || [])[0] || "" };
+  const message = $(".request-message", card);
+  const done = (text) => {
+    button.textContent = "Requested";
+    button.className = "request-pill";
+    button.disabled = true;
+    button.setAttribute("aria-expanded", "false");
+    message.textContent = text;
+  };
+  // One click, like movies and shows: Request -> Omnarr keeps looking until it finds a good copy
+  // (books ask ebook or audiobook first). "Choose a copy myself" is there for picking by hand.
+  const LABEL = { ebook: "ebook", audiobook: "audiobook", comic: "comic" };
+  const manualLink = (format) => {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "text-button";
+    link.textContent = "Choose a copy myself";
+    link.setAttribute("aria-expanded", "false");
+    const picker = document.createElement("div");
+    picker.className = "request-picker";
+    picker.hidden = true;
+    link.addEventListener("click", () => {
+      panel.hidden = false;
+      openBookPicker(picker, target, format, link, new AbortController().signal, () => request(format),
+        () => done(`Your chosen copy of the ${LABEL[format]} has been requested. If it fails, Omnarr finds another.`));
+    });
+    return [link, picker];
+  };
+  const request = async (format) => {
+    button.disabled = true;
+    $$("button", panel).forEach((b) => { b.disabled = true; });
+    button.textContent = "Requesting…";
+    message.textContent = "";
+    try {
+      await api("api/wanted", { method: "POST", body: JSON.stringify({ ...target, format }) });
+      done(`Requested. Omnarr keeps looking for the ${LABEL[format]} until it finds a good copy.`);
+      const [link, picker] = manualLink(format);
+      panel.replaceChildren(link, picker);
+      panel.hidden = false;
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Request";
+      $$("button", panel).forEach((b) => { b.disabled = false; });
+      message.textContent = error.message === "login" ? "Sign in to request this." : error.message;
+    }
+  };
+  button.addEventListener("click", () => {
+    if (item.kind === "comic") return request("comic");
+    panel.hidden = !panel.hidden;
+    button.setAttribute("aria-expanded", String(!panel.hidden));
+    if (panel.hidden) return;
+    panel.innerHTML = `<p class="hint">Which format? Omnarr keeps looking until it finds a good copy.</p><div class="request-card-actions"><button class="secondary-button" type="button" data-format="ebook">Ebook</button><button class="secondary-button" type="button" data-format="audiobook">Audiobook</button></div>`;
+    $$("[data-format]", panel).forEach((b) => b.addEventListener("click", () => request(b.dataset.format)));
+    $("[data-format]", panel).focus();
   });
 }
 
@@ -1331,6 +1402,8 @@ function findWanted(items, workId, title, format) {
 }
 
 function openBookPicker(root, workId, format, opener, detailSignal, keepLooking, onDownloaded) {
+  // workId is a library work id, or { title, author } for a book/comic that isn't in the library
+  const target = typeof workId === "string" ? { work: workId } : { title: workId.title || "", author: workId.author || "" };
   let controller;
   let step = 0;
   let candidates = [];
@@ -1351,7 +1424,8 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
     root.hidden = true;
     root.replaceChildren();
     opener.setAttribute("aria-expanded", "false");
-    const auto = $("[data-auto]", opener.closest(".book-request"));
+    const holder = opener.closest(".book-request");             // absent for related-work requests
+    const auto = holder && $("[data-auto]", holder);
     if (auto) auto.disabled = false;
     opener.focus();
     detailSignal.removeEventListener("abort", cancel);
@@ -1387,7 +1461,7 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
     options.replaceChildren();
     progress.textContent = "Finding matching books…";
     try {
-      const data = await api(`api/request/book/candidates?${new URLSearchParams({ work: workId, format })}`, { signal: controller.signal });
+      const data = await api(`api/request/book/candidates?${new URLSearchParams({ ...target, format })}`, { signal: controller.signal });
       if (!active() || current !== step) return;
       candidates = data.candidates || [];
       query = data.query || "";
@@ -1428,7 +1502,7 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
         progress.textContent = "Submitting request…";
         try {
           // Keep the opaque Shelfmark release intact, including all provider fields.
-          await api("api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], work: workId, provider: candidate.provider, book_id: candidate.book_id }) });
+          await api("api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], ...target, format, provider: candidate.provider, book_id: candidate.book_id }) });
           if (!active() || current !== step) return;
           onDownloaded();
         } catch (error) {
