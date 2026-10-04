@@ -8,12 +8,14 @@ index across all of them, groups the copies of a work together, and lets you act
 anything from one screen. Your apps stay in charge of storage, downloads and metadata.
 Omnarr is the front end.
 
-![Omnarr's library: filters on the left; shows and movies on their way; read-alongs with audio, ebook and read-along formats grouped as one book](docs/images/home.webp)
+![Omnarr's home page: search, filters, and Continue for books, audiobooks and TV in progress](docs/images/start.webp)
 
 > Status: early (v0.2). It runs every day on one home server. Expect rough edges, and
 > please file issues.
 
 ## What it does
+
+![Library shelves: shows and movies on their way; read-alongs with audio, ebook and read-along formats grouped as one book](docs/images/home.webp)
 
 - **One search across every app**, with facets (kind, format, genre, year, "have it" or "missing").
 - **Works, not files.** The ebook (Calibre), audiobook (Audiobookshelf) and read-along
