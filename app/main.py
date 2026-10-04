@@ -458,9 +458,9 @@ def _library_index():
 
 def _match_library(item, by_tmdb, by_title):
     if item["kind"] in ("movie", "tv") and item.get("tmdb"):
-        hit = by_tmdb.get((item["kind"], str(item["tmdb"])))
-        if hit:
-            return hit
+        # the id is authoritative: "The Last Airbender" (2010 film) must not match the
+        # animated show just because the titles look alike
+        return by_tmdb.get((item["kind"], str(item["tmdb"])))
     want = {normalize.surname(a) for a in item.get("authors") or []} - {""}
     for v in normalize.variants(item["label"]):
         for wid_, surnames in by_title.get((item["kind"], v), []):

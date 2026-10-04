@@ -91,7 +91,8 @@ def lookup_titles(title):
     "The Handmaid's Tale: Special Edition" -> [..., "The Handmaid's Tale"]."""
     out = []
     for t in (title, re.sub(r"\s*\([^)]*\)\s*$", "", title or ""), (title or "").split(":")[0],
-              re.sub(r"\s*[-–—]\s.*$", "", title or "")):
+              re.sub(r"\s*[-–—]\s.*$", "", title or ""),
+              (title or "").split(":", 1)[1] if ":" in (title or "") else ""):   # "Avatar…: The Reckoning of Roku"
         t = t.strip()
         if t and t not in out:
             out.append(t)

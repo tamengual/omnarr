@@ -68,7 +68,8 @@ def test_display_titles():
     assert d("Fahrenheit 451") == "Fahrenheit 451"
     assert d("Wool (Silo)", "Silo Saga") == "Wool"
     assert d("The Hobbit (Middle-Earth Universe)", "") == "The Hobbit"
-    assert normalize.lookup_titles("The Handmaid's Tale: Special Edition")[-1] == "The Handmaid's Tale"
+    lt = normalize.lookup_titles("The Handmaid's Tale: Special Edition")
+    assert lt.index("The Handmaid's Tale") < lt.index("Special Edition")      # subtitle is the last resort
 
 
 def test_universe_order_and_series_fallback():

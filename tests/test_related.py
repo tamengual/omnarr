@@ -85,3 +85,11 @@ def test_match_library():
     assert main._match_library({"kind": "tv", "tmdb": "33880", "label": "x"}, by_tmdb, by_title) == "korra"
     assert main._match_library({"kind": "book", "label": "The Rise of Kyoshi", "authors": ["F. C. Yee"]}, by_tmdb, by_title) == "kyoshi"
     assert main._match_library({"kind": "book", "label": "Dune", "authors": ["Someone Else"]}, by_tmdb, by_title) is None
+    # a screen with a TMDB id never falls back to a look-alike title
+    by_title[("movie", "thelastairbender")] = [("animated-show", set())]
+    assert main._match_library({"kind": "movie", "tmdb": "10196", "label": "The Last Airbender"}, by_tmdb, by_title) is None
+
+
+def test_lookup_titles_include_subtitle():
+    from app import normalize
+    assert "The Reckoning of Roku" in normalize.lookup_titles("Avatar, the Last Airbender: The Reckoning of Roku")

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 — 2026-10-03
+
+- Related shows and movies with a TMDB id match your library only by that id. The 2010
+  "The Last Airbender" film no longer shows as owned because you have the animated series.
+- Book lookups also try the subtitle, so "Avatar, the Last Airbender: The Reckoning of Roku"
+  is found as "The Reckoning of Roku".
+
 ## 0.2.2 — 2026-10-03
 
 - **Related works for everything, not just books.** A show, movie, book or comic page now lists
