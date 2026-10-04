@@ -94,7 +94,7 @@ def _classify(types, has):
 def related(state_con, seed_clause, cache_key):
     """[{label, kind, tmdb, igdb, year, wikidata, authors, url}] related to the seed work:
     same franchise / same series, works based on it, and what it is based on."""
-    key = "wdr:" + cache_key
+    key = "wdr2:" + cache_key                     # v2: translations/editions filtered out
     row = state_con.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
     if row:
         cached = json.loads(row[0])
@@ -163,6 +163,8 @@ def parse_related(data):
         kind = _classify(a["types"], a)
         if any("parody" in g or "fan fiction" in g for g in a["genres"]):
             continue
+        if any("edition" in x.lower() or "translation" in x.lower() for x in a["types"]):
+            continue                              # a translation/edition of the seed, not a new work
         if not kind or re.fullmatch(r"Q\d+", a["label"]):          # unlabelled items are noise
             continue
         items.append({"label": a["label"], "kind": kind, "tmdb": a["tmdbm"] or a["tmdbt"], "igdb": a["igdb"],

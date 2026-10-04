@@ -229,7 +229,9 @@ def worlds(works, seeds, related_for, match_library, n_seeds=12, skip_tmdb=()):
             out.append({"external": {"kind": it["kind"], "tmdb": it.get("tmdb"), "title": it["label"], "year": it.get("year"),
                                      "authors": it.get("authors") or [], "url": it.get("url"), "wikidata": it.get("wikidata"),
                                      "status": it.get("status") or "unknown", "poster": it.get("poster") or ""},
-                        "reason": f"From the world of {seed['title']}", "score": round(seeds[wid], 3)})
+                        "reason": (f"The screen version of {seed['title']}" if it["kind"] in ("movie", "tv")
+                                   and normalize.key(it["label"]) == normalize.key(seed["title"])
+                                   else f"From the world of {seed['title']}"), "score": round(seeds[wid], 3)})
             taken += 1
             if len(out) >= PER_SECTION:
                 return out

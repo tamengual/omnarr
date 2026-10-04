@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 — 2026-10-04
+
+- Related lists and suggestions skip translations and other editions of the same book.
+- A film or series of a book you read says so ("The screen version of …").
+
 ## 0.5.1 — 2026-10-04
 
 - Suggestions are more varied:
