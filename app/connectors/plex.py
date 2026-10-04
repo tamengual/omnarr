@@ -23,7 +23,13 @@ def headers(s):
 
 
 def base(s):
-    return s["url"].rstrip("/")
+    """The server address. People often paste Plex's web-app address (…:32400/web or
+    …/web/index.html#!/…); the API lives one level up."""
+    url = s["url"].split("#")[0].rstrip("/")
+    for tail in ("/web/index.html", "/web"):
+        if url.lower().endswith(tail):
+            url = url[: -len(tail)]
+    return url.rstrip("/")
 
 
 def client(s, timeout=60):
@@ -115,6 +121,8 @@ def test(s):
             r = c.get("/library/sections")
             if r.status_code in (401, 403):
                 return False, "Plex refused the token (or this address isn't allowed without one)"
+            if r.status_code == 404:
+                return False, "That address answers, but it isn't a Plex server's API: use http://host:32400 (no /web)"
             r.raise_for_status()
             secs = [d for d in (r.json().get("MediaContainer") or {}).get("Directory") or [] if d.get("type") in ("movie", "show")]
             name = (c.get("/").json().get("MediaContainer") or {}).get("friendlyName") or "Plex"

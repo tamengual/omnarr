@@ -113,3 +113,9 @@ def test_progress_goes_to_plex_for_admins_only(env):
     assert FakePlex.progress[0][1]["time"] == 40000
     con = sqlite3.connect(tmp / "state.db")
     assert con.execute("SELECT account_id, position FROM play_progress WHERE source='plex' AND item_id='10' ORDER BY account_id").fetchall() == [(1, 89.0), (2, 20.0)]
+
+
+def test_web_app_address_is_accepted():
+    from app.connectors import plex
+    for url in ("http://plex:32400/web", "http://plex:32400/web/", "http://plex:32400/web/index.html#!/settings", "http://plex:32400"):
+        assert plex.base({"url": url}) == "http://plex:32400"
