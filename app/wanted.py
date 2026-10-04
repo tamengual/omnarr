@@ -21,7 +21,9 @@ QUICK_RETRY = 15 * 60          # after a failed download, try the next release s
 STUCK_DAYS = 2                 # "complete" in Shelfmark but not in the library after this -> search again
 
 FORMATS = {"ebook": ["epub", "kepub", "azw3", "mobi"], "audiobook": ["m4b", "m4a", "mp3"],
-           "comic": ["cbz", "cbr", "cb7", "epub", "pdf"]}
+           # comic archives only: the server routes these to Komga (CWA ignores them and a mover
+           # puts them in Komga's folder); an epub/pdf would land in Calibre as a book
+           "comic": ["cbz", "cbr", "cb7"]}
 SIZE = {"ebook": (40_000, 150_000_000), "audiobook": (30_000_000, 4_000_000_000),
         "comic": (500_000, 2_000_000_000)}
 
@@ -204,6 +206,13 @@ def tick(cfg, state_path, index_path):
                     tried = json.loads(row["tried"] or "[]") + [row["current"]]
                     upd = {"status": "searching", "tried": json.dumps(tried), "current": None,
                            "next_search": now + QUICK_RETRY, "note": f"download {bucket}: {msg}"[:200]}
+                elif bucket == "complete" and row["format"] == "comic":
+                    # comic archives go to Komga (file names rarely match the title well enough to
+                    # spot them in the index), so a finished download is the success signal
+                    from .connectors import komga
+                    scanned = komga.scan_all(cfg, state_path)
+                    upd = {"status": "done", "done_at": now,
+                           "note": "downloaded; sent to Komga" + ("" if scanned else " (Komga not connected: scan it yourself)")}
                 elif bucket == "complete" and now - (row["last_search"] or now) > STUCK_DAYS * 86400:
                     tried = json.loads(row["tried"] or "[]") + [row["current"]]
                     upd = {"status": "searching", "tried": json.dumps(tried), "current": None, "next_search": now,

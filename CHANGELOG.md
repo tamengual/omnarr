@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5 — 2026-10-03
+
+- **Requested comics go to Komga.** The comic format now only accepts comic archives
+  (cbz/cbr/cb7), which a small server setup routes to Komga (see "Requested comics → Komga"
+  in the README). When Shelfmark finishes a comic, Omnarr asks Komga to rescan, so it
+  shows up now rather than at Komga's next scheduled scan.
+
 ## 0.2.4 — 2026-10-03
 
 - **Request related books and comics.** Books and comics in a work's related list now have a

@@ -51,3 +51,26 @@ def test_comic_format_rules():
     bad, _ = wanted.acceptable({"title": "Avatar The Promise", "format": "mp3", "size": 80_000_000, "source_id": "b"},
                                "Avatar The Promise", "comic", set())
     assert not bad
+    epub, _ = wanted.acceptable({"title": "Avatar The Promise", "format": "epub", "size": 80_000_000, "source_id": "c"},
+                                "Avatar The Promise", "comic", set())
+    assert not epub                                      # an epub would land in Calibre, not Komga
+
+
+def test_finished_comic_goes_to_komga(tmp_path, monkeypatch):
+    from app import requests_
+    from app.connectors import komga
+    state = str(tmp_path / "state.db")
+    index = str(tmp_path / "index.db")
+    import sqlite3
+    sqlite3.connect(index).execute("CREATE TABLE works (id TEXT, kind TEXT, title TEXT, authors TEXT, formats TEXT)")
+    wid = wanted.add(state, "Avatar: The Last Airbender – The Search", "Gene Luen Yang", "comic", current="rel-1")
+    con = wanted._con(state)
+    with con:
+        con.execute("UPDATE wanted_books SET status='downloading', current='rel-1' WHERE id=?", (wid,))
+    scans = []
+    monkeypatch.setattr(requests_, "shelfmark_enabled", lambda cfg: True)
+    monkeypatch.setattr(requests_, "shelfmark_activity", lambda cfg: {"status": {"complete": {"rel-1": {"id": "rel-1"}}}})
+    monkeypatch.setattr(komga, "scan_all", lambda cfg, sp=None: scans.append(1) or True)
+    wanted.tick(None, state, index)
+    row = next(i for i in wanted.list_all(state) if i["id"] == wid)
+    assert row["status"] == "done" and "Komga" in row["note"] and scans == [1]

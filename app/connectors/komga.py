@@ -74,6 +74,22 @@ def _read_api(cfg, s):
     return units
 
 
+def scan_all(cfg, state_path=None):
+    """Ask Komga to scan every library (it picks up new files right away instead of at its
+    scheduled scan). Returns True when the request was sent. Audited."""
+    s = cfg.source("komga") or {}
+    if not api_mode(s):
+        return False
+    with client(s, timeout=30) as c:
+        libs = c.get("/api/v1/libraries").json()
+        for lib in libs:
+            c.post(f"/api/v1/libraries/{lib['id']}/scan")
+    if state_path:
+        from .. import live
+        live._audit(state_path, "komga.scan", {"libraries": [lib.get("name") for lib in libs]}, "ok")
+    return True
+
+
 def cover_bytes(cfg, book_id):
     s = cfg.source("komga") or {}
     if not api_mode(s):

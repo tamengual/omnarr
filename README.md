@@ -101,6 +101,19 @@ To serve Omnarr at something like `https://example.com/omnarr/`, set `OMNARR_BAS
 and have the proxy strip that prefix before forwarding. The UI uses relative links, so
 nothing else needs changing.
 
+### Requested comics → Komga
+
+Shelfmark saves every download to one folder (usually your Calibre-Web-Automated ingest
+folder). To have requested comics land in Komga instead:
+
+1. In CWA → Settings → CWA Settings, add `cbz, cbr, cb7, cbt` to **formats to ignore during
+   ingest**, so CWA leaves comic archives where they are.
+2. Move those files into Komga's library folder on a schedule. For example, a cron entry
+   every 5 minutes:
+   `find /path/to/ingest -type f \( -iname '*.cbz' -o -iname '*.cbr' -o -iname '*.cb7' \) -mmin +2 -exec mv -n {} /path/to/komga/comics/ \;`
+3. Connect Komga in Omnarr with an API key. Omnarr asks Komga to rescan as soon as a requested
+   comic finishes downloading.
+
 ## Install (Home Assistant add-on)
 
 On Home Assistant OS or Supervised, add the add-on repository
