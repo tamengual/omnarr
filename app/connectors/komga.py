@@ -56,6 +56,8 @@ def _read_api(cfg, s):
             for a in m.get("authors") or (sr.get("booksMetadata") or {}).get("authors") or []:
                 if (a.get("role") or "").lower() in AUTHOR_ROLES and a.get("name") not in authors:
                     authors.append(a["name"])
+            rp = b.get("readProgress") or {}                 # the API key owner's reading position
+            pages = (b.get("media") or {}).get("pagesCount") or 0
             series_title = sm.get("title") or b.get("seriesTitle") or ""
             one_shot = (sr.get("booksCount") or 1) == 1 and not sm.get("title")
             units.append(Unit(
@@ -70,8 +72,11 @@ def _read_api(cfg, s):
                 cover=f"komga:{b['id']}",
                 added=str(b.get("created") or "")[:10], library=libs.get(b.get("libraryId")) or "Komga",
                 ids={"isbn": m["isbn"]} if m.get("isbn") else {},
-                extra={"pages": (b.get("media") or {}).get("pagesCount"), "publisher": sm.get("publisher") or "",
-                       "series_id": b.get("seriesId")},
+                progress=(1.0 if rp.get("completed") else min(1.0, rp["page"] / pages)) if rp and pages else None,
+                finished=bool(rp.get("completed")),
+                extra={"pages": pages or None, "publisher": sm.get("publisher") or "",
+                       "series_id": b.get("seriesId"),
+                       "last_listened": str(rp.get("lastModified") or rp.get("readDate") or "")[:19]},
             ))
     return units
 

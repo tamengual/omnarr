@@ -68,3 +68,30 @@ def test_komga_age_rating_18_is_adult(monkeypatch):
     monkeypatch.setattr(komga, "_pages", lambda c, path, method="get": iter(series if "series" in path else books))
     units = {u.title: u for u in komga._read_api(Cfg({}), {"url": "http://k", "api_key": "x"})}
     assert units["Late night"].adult and not units["Bone"].adult
+
+
+def test_komga_reading_progress(monkeypatch):
+    """Komga's readProgress (page / pages) feeds Continue, like any other progress."""
+    class C:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, path, params=None):
+            class R:
+                def json(_): return [{"id": "L", "name": "Comics"}]
+            return R()
+
+    series = [{"id": "s1", "metadata": {}, "booksCount": 3}]
+    books = [
+        {"id": "b1", "seriesId": "s1", "name": "Part 1", "media": {"pagesCount": 80},
+         "readProgress": {"page": 20, "completed": False, "lastModified": "2026-10-04T04:45:46Z"}},
+        {"id": "b2", "seriesId": "s1", "name": "Part 2", "media": {"pagesCount": 80},
+         "readProgress": {"page": 80, "completed": True, "lastModified": "2026-10-04T05:00:00Z"}},
+        {"id": "b3", "seriesId": "s1", "name": "Part 3", "media": {"pagesCount": 80}, "readProgress": None},
+    ]
+    monkeypatch.setattr(komga, "client", lambda s, timeout=60: C())
+    monkeypatch.setattr(komga, "_pages", lambda c, path, method="get": iter(series if "series" in path else books))
+    units = {u.title: u for u in komga._read_api(Cfg({}), {"url": "http://k", "api_key": "x"})}
+    assert units["Part 1"].progress == 0.25 and not units["Part 1"].finished
+    assert units["Part 1"].extra["last_listened"] == "2026-10-04T04:45:46"
+    assert units["Part 2"].finished and units["Part 2"].progress == 1.0
+    assert units["Part 3"].progress is None and not units["Part 3"].finished

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 — 2026-10-04
+
+- **Comics you're reading in Komga show up in Continue.** Omnarr now reads Komga's reading
+  position (for the account whose API key Omnarr uses), so comics count as in progress or
+  finished like books, audiobooks and shows.
+
 ## 0.3.3 — 2026-10-04
 
 - **Adult comics and books go in the private section.** Komga books whose series is rated
