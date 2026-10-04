@@ -26,8 +26,13 @@ Omnarr is the front end.
 
 - **Live details** from the owning app: which episodes you have or are missing, download
   progress, listening and reading positions.
-- **Request from anything:** missing episodes and movies (Sonarr/Radarr/Seerr), the
-  audiobook of an ebook you own (Shelfmark), the screen adaptation of a book, and games (ROMarr).
+- **Everything related, in one place.** A show, movie, book or comic page lists the rest of
+  its world from Wikidata: the same franchise, adaptations, and what it was based on.
+  Open *Avatar: The Last Airbender* and you get Korra, the films, the live-action series,
+  the novels, the comics and the games.
+- **Request from anything:** missing episodes and movies (Seerr → Sonarr/Radarr), books,
+  audiobooks and comics (Shelfmark), and games (ROMarr). That includes anything in a
+  related list.
 - **Keep looking.** Wanted books are re-searched on a schedule until an acceptable copy turns up.
   "Search harder" runs a free-text Prowlarr search and pushes the release to Sonarr or Radarr.
 - **Play in the browser.** Video plays from Jellyfin (direct or transcoded HLS), and audiobooks
@@ -36,6 +41,16 @@ Omnarr is the front end.
 - **An optional private section** (Stash, adult Jellyfin libraries), off by default and PIN-locked when on.
 - **Read-only by design.** Omnarr never writes to another app's files. Changes go through
   each app's own API, and every change is logged on the Activity page.
+
+## How it fits in
+
+Omnarr is the front end. Your existing apps keep storing, downloading and organising, and
+Omnarr reads from them, plays through them, and sends requests to them.
+
+For a fuller example (read-alongs synced across a Kobo and phone apps), see
+[docs/example-setup.md](docs/example-setup.md).
+
+![Diagram: you use Omnarr; Omnarr reads and plays from your library apps (Jellyfin, Sonarr/Radarr, Calibre, Audiobookshelf, Storyteller, Komga, RomM) and sends requests through request apps, indexers and a download client, which deliver into those libraries](docs/images/architecture.svg)
 
 ## Supported apps
 
@@ -101,10 +116,15 @@ To serve Omnarr at something like `https://example.com/omnarr/`, set `OMNARR_BAS
 and have the proxy strip that prefix before forwarding. The UI uses relative links, so
 nothing else needs changing.
 
-### Requested comics → Komga
+### How requested books arrive (and comics → Komga)
 
-Shelfmark saves every download to one folder (usually your Calibre-Web-Automated ingest
-folder). To have requested comics land in Komga instead:
+When you request a book, audiobook or comic, Omnarr keeps looking through Shelfmark until a
+good copy turns up. Shelfmark saves ebooks and comics to one folder (usually your
+Calibre-Web-Automated ingest folder) and audiobooks to another:
+
+![Diagram: Omnarr → Shelfmark → download client; ebooks and comics land in the ingest folder (ebooks ingested into Calibre, comic archives moved to Komga), audiobooks land in their own folder that Audiobookshelf scans](docs/images/book-requests.svg)
+
+To have requested comics land in Komga instead of Calibre:
 
 1. In CWA → Settings → CWA Settings, add `cbz, cbr, cb7, cbt` to **formats to ignore during
    ingest**, so CWA leaves comic archives where they are.
