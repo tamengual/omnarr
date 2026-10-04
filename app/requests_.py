@@ -1,7 +1,8 @@
 """Requests ("Get it") from a library item.
 
-- Screen/game adaptations of a book: found on Wikidata ("based on", P144, of the
-  book or of its book series), with TMDB / IGDB ids. Cached in the state DB.
+- Related works (any kind): found on Wikidata from the work's external ids (shows/movies)
+  or title + author (books): same media franchise or series, works based on it, and what
+  it is based on. Cached in the state DB.
 - Movies/TV are requested through Seerr (-> Radarr/Sonarr with the server's quality
   rules); their status comes from Seerr (available / requested / not requested).
 - Missing book formats (ebook <-> audiobook) are requested through Shelfmark:
@@ -10,6 +11,7 @@
 """
 import json
 import logging
+import re
 import time
 import urllib.parse
 
@@ -18,60 +20,161 @@ import httpx
 log = logging.getLogger("omnarr.requests")
 
 WIKIDATA = "https://query.wikidata.org/sparql"
-UA = "Omnarr/0.1 (self-hosted; personal media library)"
+UA = "Omnarr/0.2 (https://github.com/tamengual/omnarr; self-hosted media library)"
 CACHE_DAYS = 30
 SEERR_STATUS = {1: "unknown", 2: "requested", 3: "requested", 4: "partial", 5: "available", 6: "blocked"}
 
 
-# ── Wikidata: what was made from this book? ──────────────────────────────────
+# ── Wikidata: everything related to a work ───────────────────────────────────
+RELATED_CACHE_DAYS = 14
+PER_KIND = 24                       # cap per kind so huge franchises (Star Wars…) stay readable
+
+
 def _sparql_str(s):
     return json.dumps(s)            # JSON string escaping is valid SPARQL string escaping
 
 
-def adaptations(state_con, title, author_surname):
-    """[{label, kind: movie|tv|game, tmdb, igdb, year, wikidata}] for a book title + author."""
-    key = f"wd:{title.lower()}|{author_surname.lower()}"
+def seed_from_ids(kind, ids):
+    """SPARQL clause binding ?seed from a show/movie's external ids, or None."""
+    props = {"show": (("tmdb", "P4983"), ("tvdb", "P4835"), ("imdb", "P345")),
+             "movie": (("tmdb", "P4947"), ("imdb", "P345"))}.get(kind, ())
+    parts = []
+    for key, prop in props:
+        v = str(ids.get(key) or "").strip()
+        if re.fullmatch(r"\d{1,9}|tt\d{5,10}", v):
+            parts.append(f"{{ ?seed wdt:{prop} {_sparql_str(v)} }}")
+    return " UNION ".join(parts) or None
+
+
+def seed_from_book(title, author_surname):
+    """SPARQL clause binding ?seed to a book by English title + author surname.
+    Wikidata labels often use a typographic apostrophe, so both spellings are tried."""
+    variants = {title, title.replace("'", "\u2019"), title.replace("\u2019", "'")}
+    values = " ".join(f"{_sparql_str(v)}@{lang}" for v in sorted(variants) for lang in ("en", "mul"))
+    return (f"VALUES ?seedLabel {{ {values} }} ?seed rdfs:label ?seedLabel ; wdt:P50 ?a . ?a rdfs:label ?al . "
+            f"FILTER(LANG(?al) IN (\"en\", \"mul\") && CONTAINS(LCASE(?al), {_sparql_str(author_surname.lower())}))")
+
+
+NOT_MEDIA = ("character", "fictional", "season", "episode", "soundtrack", "album", "song",
+             "franchise", "award", "toy", "board game", "card game", "tabletop", "role-playing game system",
+             "theme park", "attraction", "musical work", "stage play")
+
+
+def _classify(types, has):
+    """movie|tv|game|book|comic, or None for things that aren't media (franchise items,
+    characters, writing systems, soundtracks…) and for series-of-books entries."""
+    if has.get("tmdbm"):
+        return "movie"
+    if has.get("tmdbt"):
+        return "tv"
+    if has.get("igdb"):
+        return "game"
+    # drop things that merely belong to the world: characters, seasons, episodes, music,
+    # tabletop games, awards…
+    ts = [x.lower() for x in types if not any(n in x.lower() for n in NOT_MEDIA)]
+    if not ts:
+        return None
+    t = " | ".join(ts)
+    tv_words = ("television series", "miniseries", "web series", "television program", "anime")
+    if all("series" in x or "franchise" in x or "collection" in x for x in ts) and not any(k in t for k in tv_words):
+        return None                 # a film series / novel series / comic series: its members are listed
+    if "video game" in t:
+        return "game"
+    if "film" in t:
+        return "movie"
+    if any(k in t for k in tv_words):
+        return "tv"
+    if any(k in t for k in ("comic", "graphic novel", "manga")):
+        return "comic"
+    if any(k in t for k in ("novel", "literary work", "book", "novella", "short story")):
+        return "book"
+    return None
+
+
+def related(state_con, seed_clause, cache_key):
+    """[{label, kind, tmdb, igdb, year, wikidata, authors, url}] related to the seed work:
+    same franchise / same series, works based on it, and what it is based on."""
+    key = "wdr:" + cache_key
     row = state_con.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
     if row:
         cached = json.loads(row[0])
-        if cached.get("at", 0) > time.time() - CACHE_DAYS * 86400:
+        if cached.get("at", 0) > time.time() - RELATED_CACHE_DAYS * 86400:
             return cached["items"]
     q = f"""
-SELECT DISTINCT ?work ?workLabel ?tmdbm ?tmdbt ?igdb ?year WHERE {{
-  ?book rdfs:label {_sparql_str(title)}@en ; wdt:P50 ?a .
-  ?a rdfs:label ?al . FILTER(LANG(?al) = "en" && CONTAINS(LCASE(?al), {_sparql_str(author_surname.lower())}))
-  {{ ?work wdt:P144 ?book }} UNION {{ ?book wdt:P179 ?ser . ?work wdt:P144 ?ser }}
-  OPTIONAL {{ ?work wdt:P4947 ?tmdbm }}
-  OPTIONAL {{ ?work wdt:P4983 ?tmdbt }}
-  OPTIONAL {{ ?work wdt:P5794 ?igdb }}
-  OPTIONAL {{ ?work wdt:P577 ?d }} BIND(YEAR(?d) AS ?year)
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
-}} LIMIT 40"""
-    items = []
+SELECT ?seed ?item ?itemLabel ?typeLabel ?formLabel ?genreLabel ?tmdbm ?tmdbt ?igdb ?d ?authorLabel ?article WHERE {{
+  {seed_clause}
+  {{ ?seed wdt:P8345|wdt:P179 ?fr . ?item wdt:P8345|wdt:P179 ?fr . }}
+  UNION {{ ?item wdt:P144 ?seed }}
+  UNION {{ ?seed wdt:P144 ?item }}
+  UNION {{ ?seed wdt:P179 ?ser . ?item wdt:P144 ?ser }}
+  FILTER(?item != ?seed)
+  OPTIONAL {{ ?item wdt:P31 ?type }}
+  OPTIONAL {{ ?item wdt:P7937 ?form }}
+  OPTIONAL {{ ?item wdt:P136 ?genre }}
+  OPTIONAL {{ ?item wdt:P4947 ?tmdbm }}
+  OPTIONAL {{ ?item wdt:P4983 ?tmdbt }}
+  OPTIONAL {{ ?item wdt:P5794 ?igdb }}
+  OPTIONAL {{ ?item wdt:P577|wdt:P580 ?d }}
+  OPTIONAL {{ ?item wdt:P50 ?author }}
+  OPTIONAL {{ ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,mul". }}
+}} LIMIT 1500"""
     try:
-        r = httpx.get(WIKIDATA, params={"query": q, "format": "json"}, headers={"User-Agent": UA}, timeout=25)
+        r = httpx.get(WIKIDATA, params={"query": q, "format": "json"}, headers={"User-Agent": UA}, timeout=30)
         r.raise_for_status()
-        seen = {}
-        for b in r.json()["results"]["bindings"]:
-            v = {k: x["value"] for k, x in b.items()}
-            if not (v.get("tmdbm") or v.get("tmdbt") or v.get("igdb")):
-                continue
-            kind = "movie" if v.get("tmdbm") else ("tv" if v.get("tmdbt") else "game")
-            wid = v["work"].rsplit("/", 1)[-1]
-            it = seen.setdefault(wid, {"label": v.get("workLabel", ""), "kind": kind,
-                                       "tmdb": v.get("tmdbm") or v.get("tmdbt"), "igdb": v.get("igdb"),
-                                       "year": None, "wikidata": wid})
-            y = v.get("year")
-            if y and y.isdigit() and (it["year"] is None or int(y) < it["year"]):
-                it["year"] = int(y)
-        items = sorted(seen.values(), key=lambda x: (x["year"] or 9999))
+        items = parse_related(r.json())
     except Exception as e:
-        log.warning("wikidata lookup failed for %r: %s", title, e)
-        return []                    # don't cache failures
+        log.warning("wikidata related lookup failed for %s: %s", cache_key, e)
+        with state_con:              # retry tomorrow, not on every page view
+            state_con.execute("INSERT OR REPLACE INTO settings VALUES (?,?)",
+                              (key, json.dumps({"at": time.time() - (RELATED_CACHE_DAYS - 1) * 86400, "items": []})))
+        return []
     with state_con:
         state_con.execute("INSERT OR REPLACE INTO settings VALUES (?,?)",
                           (key, json.dumps({"at": time.time(), "items": items})))
     return items
+
+
+def parse_related(data):
+    seeds = {b["seed"]["value"] for b in data["results"]["bindings"] if "seed" in b}
+    agg = {}
+    for b in data["results"]["bindings"]:
+        v = {k: x["value"] for k, x in b.items()}
+        if v["item"] in seeds:
+            continue
+        wid = v["item"].rsplit("/", 1)[-1]
+        a = agg.setdefault(wid, {"label": v.get("itemLabel", ""), "types": set(), "genres": set(), "authors": [], "years": set(),
+                                 "tmdbm": None, "tmdbt": None, "igdb": None, "article": None})
+        for k in ("typeLabel", "formLabel"):
+            if v.get(k):
+                a["types"].add(v[k])
+        if v.get("genreLabel"):
+            a["genres"].add(v["genreLabel"].lower())
+        if "comic" in (v.get("genreLabel") or "").lower() or "graphic novel" in (v.get("genreLabel") or "").lower():
+            a["types"].add(v["genreLabel"])
+        for k in ("tmdbm", "tmdbt", "igdb", "article"):
+            a[k] = a[k] or v.get(k)
+        if v.get("authorLabel") and v["authorLabel"] not in a["authors"]:
+            a["authors"].append(v["authorLabel"])
+        if (v.get("d") or "")[:4].isdigit():
+            a["years"].add(int(v["d"][:4]))
+    items, per_kind = [], {}
+    for wid, a in agg.items():
+        kind = _classify(a["types"], a)
+        if any("parody" in g or "fan fiction" in g for g in a["genres"]):
+            continue
+        if not kind or re.fullmatch(r"Q\d+", a["label"]):          # unlabelled items are noise
+            continue
+        items.append({"label": a["label"], "kind": kind, "tmdb": a["tmdbm"] or a["tmdbt"], "igdb": a["igdb"],
+                      "year": min(a["years"]) if a["years"] else None, "wikidata": wid, "authors": a["authors"],
+                      "url": a["article"] or f"https://www.wikidata.org/wiki/{wid}"})
+    items.sort(key=lambda x: (x["year"] or 9999, x["label"]))
+    out = []
+    for it in items:
+        per_kind[it["kind"]] = per_kind.get(it["kind"], 0) + 1
+        if per_kind[it["kind"]] <= PER_KIND:
+            out.append(it)
+    return out
 
 
 # ── Seerr ────────────────────────────────────────────────────────────────────

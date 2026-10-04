@@ -5,6 +5,7 @@ Run: uvicorn app.main:app --host 0.0.0.0 --port 8765
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -434,58 +435,105 @@ async def api_override(request: Request):
 BOOK_FORMATS = ("ebook", "audiobook")
 
 
-def _jellyfin_by_tmdb():
-    """tmdb id -> work id for screen items already in the library."""
+def _library_index():
+    """Lookup tables for matching outside works to the library:
+    (kind, tmdb) -> work id for screens, and (kind, title key) -> [(work id, author surnames)]."""
     con = search.connect(INDEX)
     try:
-        return {r[0]: r[1] for r in con.execute(
-            "SELECT json_extract(extra,'$.ids.tmdb'), work_id FROM editions WHERE source='jellyfin' "
-            "AND json_extract(extra,'$.ids.tmdb') IS NOT NULL")}
+        by_tmdb, by_title = {}, {}
+        for wid_, kind, tmdb in con.execute(
+                "SELECT e.work_id, w.kind, json_extract(e.extra,'$.ids.tmdb') FROM editions e JOIN works w ON w.id=e.work_id "
+                "WHERE w.kind IN ('show','movie') AND json_extract(e.extra,'$.ids.tmdb') IS NOT NULL"):
+            by_tmdb[("tv" if kind == "show" else "movie", str(tmdb))] = wid_
+        for wid_, kind, title, authors in con.execute(
+                "SELECT id, kind, title, authors FROM works WHERE kind IN ('book','comic','game','show','movie') AND hidden=0"):
+            k = {"show": "tv"}.get(kind, kind)
+            surnames = {normalize.surname(a) for a in json.loads(authors or "[]")}
+            for v in normalize.variants(title):
+                by_title.setdefault((k, v), []).append((wid_, surnames))
+        return by_tmdb, by_title
+    finally:
+        con.close()
+
+
+def _match_library(item, by_tmdb, by_title):
+    if item["kind"] in ("movie", "tv") and item.get("tmdb"):
+        hit = by_tmdb.get((item["kind"], str(item["tmdb"])))
+        if hit:
+            return hit
+    want = {normalize.surname(a) for a in item.get("authors") or []} - {""}
+    for v in normalize.variants(item["label"]):
+        for wid_, surnames in by_title.get((item["kind"], v), []):
+            if not want or not surnames - {""} or want & surnames:
+                return wid_
+    return None
+
+
+def _related_items(w):
+    """Wikidata lookup for a work: by external ids (shows/movies) or title + author (books)."""
+    con = state()
+    try:
+        if w["kind"] in ("show", "movie"):
+            ids = {}
+            for e in w["editions"]:
+                for k, v in ((e.get("extra") or {}).get("ids") or {}).items():
+                    ids.setdefault(k, v)
+            clause = requests_.seed_from_ids(w["kind"], ids)
+            if not clause:
+                return []
+            key = f"{w['kind']}:" + ",".join(f"{k}={ids[k]}" for k in sorted(ids) if k in ("tmdb", "tvdb", "imdb"))
+            return requests_.related(con, clause, key)
+        if w["kind"] in ("book", "comic"):
+            surname = normalize.surname((w["authors"] or [""])[0])
+            for t in normalize.lookup_titles(w["title"]):
+                found = requests_.related(con, requests_.seed_from_book(t, surname), f"book:{t.lower()}|{surname}")
+                if found:
+                    return found             # the most specific title that Wikidata knows wins
+        return []
     finally:
         con.close()
 
 
 @app.get("/api/work/{wid}/requests")
 def api_work_requests(wid: str, request: Request):
-    """What can be requested from this item: missing book formats + screen/game adaptations."""
+    """What can be requested from this item: missing book formats, plus everything related to it
+    (same franchise/series, adaptations, what it was based on), matched to the library."""
     w = search.work(INDEX, wid, _adult_ok(_session(request)))
     if not w:
         raise HTTPException(404, "Not found")
     out = {"missing_formats": [], "adaptations": [], "shelfmark_enabled": requests_.shelfmark_enabled(cfg),
            "seerr_enabled": bool(cfg.source("seerr")), "romarr_enabled": requests_.romarr_enabled(cfg)}
-    if w["kind"] != "book":
+    if w.get("adult"):
+        return out                           # private items are never looked up outside
+    if w["kind"] == "book":
+        out["missing_formats"] = [f for f in BOOK_FORMATS if f not in w["formats"]]
+    found = _related_items(w)
+    if not found:
         return out
-    out["missing_formats"] = [f for f in BOOK_FORMATS if f not in w["formats"]]
-    con = state()
-    found, seen = [], set()
-    try:
-        surname = normalize.surname((w["authors"] or [""])[0])
-        for t in normalize.lookup_titles(w["title"]):
-            for a in requests_.adaptations(con, t, surname):
-                if a["wikidata"] not in seen:
-                    seen.add(a["wikidata"])
-                    found.append(a)
-            if found:
-                break                    # the most specific title that Wikidata knows wins
-    finally:
-        con.close()
-    owned = _jellyfin_by_tmdb()
+    by_tmdb, by_title = _library_index()
+    shown = {wid} | {x["id"] for k in ("series_works", "universe_works") for x in w.get(k) or []}
+    seerr_lookups = 0
     for a in found:
-        item = dict(a, status="unknown", in_library=None, poster="", url="")
-        if a["kind"] in ("movie", "tv") and a.get("tmdb"):
-            if str(a["tmdb"]) in owned:
-                item["status"], item["in_library"] = "available", owned[str(a["tmdb"])]
-            elif cfg.source("seerr"):
-                try:
-                    d = requests_.seerr_details(cfg, a["kind"], a["tmdb"])
-                    if d:
-                        item.update(status=d["status"], poster=d["poster"], url=d["url"],
-                                    label=d["title"] or a["label"], year=d["year"] or a["year"])
-                except Exception as e:
-                    log.debug("seerr details failed: %s", e)
+        item = dict(a, status="unknown", in_library=None, poster="")
+        owned = _match_library(a, by_tmdb, by_title)
+        if owned in shown:
+            continue                         # already on this page ("More in…")
+        if owned:
+            item["status"], item["in_library"] = "available", owned
+        elif a["kind"] in ("movie", "tv") and a.get("tmdb") and cfg.source("seerr") and seerr_lookups < 16:
+            seerr_lookups += 1
+            try:
+                d = requests_.seerr_details(cfg, a["kind"], a["tmdb"])
+                if d:
+                    item.update(status=d["status"], poster=d["poster"], url=d["url"] or a["url"],
+                                label=d["title"] or a["label"], year=d["year"] or a["year"])
+            except Exception as e:
+                log.debug("seerr details failed: %s", e)
         elif a["kind"] == "game":
             item.update(status="not_requested" if requests_.romarr_enabled(cfg) else "no_requester",
-                        url=f"https://www.igdb.com/games/{a['igdb']}" if a.get("igdb") else "")
+                        url=f"https://www.igdb.com/games/{a['igdb']}" if a.get("igdb") else a["url"])
+        elif a["kind"] in ("book", "comic"):
+            item["status"] = "not_owned"
         out["adaptations"].append(item)
     return out
 

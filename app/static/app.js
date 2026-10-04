@@ -1174,13 +1174,15 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
   items = items.filter((item) => !isPrivateWork(item));
   root.innerHTML = items.map((item) => {
     const title = item.label || item.title || "Untitled";
-    const kind = { movie: "Movie", tv: "TV", game: "Game" }[item.kind] || item.kind;
+    const kind = { movie: "Movie", tv: "TV", game: "Game", book: "Book", comic: "Comic" }[item.kind] || item.kind;
     const url = item.url ? safeUrl(item.url) : "";
     let action;
     if (item.status === "available") {
       action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${search ? "Available" : "In Jellyfin"}</span>`;
     } else if (["requested", "partial"].includes(item.status)) {
       action = `<button class="request-pill" type="button" disabled>${item.status === "partial" ? "Partly available" : "Requested"}</button>`;
+    } else if (item.status === "not_owned") {
+      action = '<span class="request-pill">Not in your library</span>';
     } else if (item.kind === "game" && item.status === "no_requester") {
       action = '<span class="hint">Games can\'t be requested automatically</span>';
     } else if (item.kind === "game" && item.status === "not_requested" && romarrEnabled) {
@@ -1454,10 +1456,13 @@ async function loadWorkRequests(root, workId, result, signal, work) {
   }
   const formats = (data.missing_formats || []).filter((format) => ["ebook", "audiobook"].includes(format));
   const adaptations = [...(data.adaptations || [])].sort((a, b) => (Number(a.year) || Infinity) - (Number(b.year) || Infinity));
-  message.textContent = !formats.length && !adaptations.length ? "No additional formats or adaptations found." : "";
+  const screens = adaptations.filter((item) => ["movie", "tv", "game"].includes(item.kind));
+  const reading = adaptations.filter((item) => ["book", "comic"].includes(item.kind));
+  message.textContent = !formats.length && !adaptations.length ? "Nothing related found yet." : "";
   const content = $("[data-request-content]", root);
-  content.innerHTML = `${formats.length ? `<div class="request-group"><h4>Also available to request</h4>${!data.shelfmark_enabled ? '<p class="hint" id="shelfmark-hint">Connect Shelfmark in config to request books</p>' : ""}${formats.map((format) => `<div class="book-request" data-book-format="${format}"><h5>Request the ${format}</h5><div data-book-options><p class="hint">Checking wanted status…</p></div><p class="hint request-message" data-book-message role="status" tabindex="-1"></p></div>`).join("")}</div>` : ""}${adaptations.length ? '<div class="request-group"><h4>On screen &amp; in games</h4><div class="request-grid"></div></div>' : ""}`;
-  if (adaptations.length) renderRequestCards($(".request-grid", content), adaptations, data.seerr_enabled, false, data.romarr_enabled);
+  content.innerHTML = `${formats.length ? `<div class="request-group"><h4>Also available to request</h4>${!data.shelfmark_enabled ? '<p class="hint" id="shelfmark-hint">Connect Shelfmark in config to request books</p>' : ""}${formats.map((format) => `<div class="book-request" data-book-format="${format}"><h5>Request the ${format}</h5><div data-book-options><p class="hint">Checking wanted status…</p></div><p class="hint request-message" data-book-message role="status" tabindex="-1"></p></div>`).join("")}</div>` : ""}${screens.length ? '<div class="request-group"><h4>On screen &amp; in games</h4><div class="request-grid" data-related="screens"></div></div>' : ""}${reading.length ? '<div class="request-group"><h4>Books &amp; comics</h4><div class="request-grid" data-related="reading"></div></div>' : ""}`;
+  if (screens.length) renderRequestCards($('[data-related="screens"]', content), screens, data.seerr_enabled, false, data.romarr_enabled);
+  if (reading.length) renderRequestCards($('[data-related="reading"]', content), reading, data.seerr_enabled, false, data.romarr_enabled);
   if (!formats.length) return;
   async function loadWanted() {
     let items;

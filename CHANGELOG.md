@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 — 2026-10-03
+
+- **Related works for everything, not just books.** A show, movie, book or comic page now lists
+  the rest of its world: the same media franchise or series, works based on it, and what it was
+  based on. Results are grouped under "On screen & in games" and "Books & comics". Shows and
+  movies are looked up by their exact TMDB/TVDB/IMDb ids. For Avatar: The Last Airbender, that
+  finds The Legend of Korra, the 2010 film, the 2024 live-action series, the 2026 film, the
+  games, the Kyoshi and Yangchen novels and the Dark Horse comics.
+- Items you already own open directly. Shows and movies can be requested (Seerr), and so can
+  games (ROMarr).
+- Fixed: book lookups missed authors whose Wikidata name is stored as a language-neutral
+  ("mul") label, such as J. K. Rowling, so their books found no adaptations.
+- Filters out franchise noise: characters, seasons, soundtracks, parodies and series/collection entries.
+
 ## 0.2.1 — 2026-10-03
 
 - **Starter lists.** About 70 well-known book→screen adaptations (Silo, Dune, Harry Potter,
