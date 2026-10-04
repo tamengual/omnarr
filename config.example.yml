@@ -14,6 +14,11 @@ adult:
   unlock_minutes: 30             # how long the private-section PIN unlock lasts
                                  # (the section itself is switched on in Settings; off by default)
 
+# Omnarr ships with starter lists of well-known adaptations and shared universes
+# (app/starter.yml: Middle-earth, the Cosmere, Dune, Harry Potter films…). Yours below are
+# added on top; a universe with the same name replaces the built-in one.
+# starter_lists: false          # uncomment to use only your own lists
+
 # Book -> screen adaptations (shown as linked, separate entries).
 adaptations:
   - {book: "Wool", screen: "Silo"}
