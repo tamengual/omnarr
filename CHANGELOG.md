@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.2 — 2026-10-04
+
+- **Request approvals.** A new *can ask* permission sits between guest and family. Those
+  people's requests (movies, shows, books, comics, games) wait in **Activity → Requests**
+  until an admin approves or declines them, and they can withdraw their own. Invitations have
+  a *Friend (asks first)* preset.
+- **Notifications (optional).**
+  - A webhook connection sends events to ntfy, a Discord channel, a Home Assistant webhook,
+    or anything that takes JSON. You can limit which events it sends.
+  - People can add an email address and get "your request is ready / was approved / was
+    declined" emails, which needs the Email connection.
+  - Admins are emailed when something needs approval.
+  - Events: request ready, approval needed, request decided, someone joined, upload received.
+- **Add to Home Screen.** Omnarr has an app icon and opens full screen when saved to a phone's
+  home screen (iPhone and Android).
+- Requested comics: Komga is asked to rescan again 10 minutes after the download, in case
+  the file arrived late.
+- Security headers are on every response, including sign-in errors.
+
 ## 0.3.1 — 2026-10-04
 
 - **One Omnarr account is enough.** Playback position, finished items and "Continue" are now

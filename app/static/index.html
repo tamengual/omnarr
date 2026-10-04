@@ -7,6 +7,12 @@
   <meta name="theme-color" content="#10151d" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f5f2eb" media="(prefers-color-scheme: light)">
   <title>Omnarr</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Omnarr">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23d85d38'/%3E%3Cpath d='M6 14v11h20V14l-3-6H9zM6 14h20M11 8v6m10-6v6M14 14v5h4v-5' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -160,6 +166,9 @@
             <form id="my-account-form" class="password-form">
               <label class="field">Jellyfin username<input name="jellyfin_user" autocomplete="off" disabled></label>
               <label class="field">Audiobookshelf API key<input name="abs_api_key" type="password" autocomplete="off" disabled></label>
+              <label class="field">Email<input name="email" type="email" autocomplete="email" aria-describedby="account-email-help account-message" disabled></label>
+              <label class="check"><input name="notify_email" type="checkbox" aria-describedby="account-email-help" disabled><span>Email me when my requests are ready or decided</span></label>
+              <p id="account-email-help" class="hint">Emails need an admin to set up Email in Connections.</p>
               <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save account</button><button id="account-retry" class="secondary-button" type="button" hidden>Try again</button></div>
             </form>
             <p id="account-message" class="connection-message" role="status" aria-live="polite"></p>

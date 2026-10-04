@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, config as config_mod, identity, indexer, live, normalize, play, playstate, requests_, search, wanted
+from . import accounts, config as config_mod, identity, indexer, live, normalize, notify, play, playstate, requests_, search, wanted
 from .connectors import abs as abs_c, arr, calibre, jellyfin, komga, registry, romm, stash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -126,6 +126,11 @@ ADMIN_PATHS = ("/api/setup/", "/api/reindex", "/api/override", "/api/accounts")
 REQUEST_PATHS = ("/api/request/", "/api/action", "/api/wanted")
 DOWNLOAD_PATHS = ("/api/download/",)
 UPLOAD_PATHS = ("/api/upload",)
+QUEUEABLE = ("/api/request/screen", "/api/request/game", "/api/request/book/download")
+
+
+def _queueable(path, method):
+    return method == "POST" and (path in QUEUEABLE or path == "/api/wanted")
 
 
 @app.middleware("http")
@@ -135,10 +140,6 @@ async def revalidate_ui(request: Request, call_next):
     response = await call_next(request)
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
-    # basic hardening for installs reachable from the internet (e.g. Tailscale Funnel)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "same-origin")
-    response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
     return response
 
 
@@ -152,7 +153,8 @@ async def require_login(request: Request, call_next):
         if path.startswith(ADMIN_PATHS) and sess["account"]["role"] != "admin":
             return JSONResponse({"error": "Only an admin can do that", "detail": "Only an admin can do that"}, status_code=403)
         if (path.startswith(REQUEST_PATHS) and request.method != "GET"
-                and not accounts.allowed(sess["account"], "can_request")):
+                and not accounts.allowed(sess["account"], "can_request")
+                and not (accounts.allowed(sess["account"], "can_ask") and _queueable(path, request.method))):
             msg = "Your account can browse and play, but not request downloads"
             return JSONResponse({"error": msg, "detail": msg}, status_code=403)
         if path.startswith(DOWNLOAD_PATHS) and not accounts.allowed(sess["account"], "can_download"):
@@ -169,6 +171,17 @@ async def act_as(request: Request, call_next):
     """Jellyfin/ABS calls in this request use the signed-in person's own identity."""
     identity.set_for(_account(request) if request.url.path.startswith("/api/") else None)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Basic hardening for installs reachable from the internet (e.g. Tailscale Funnel).
+    Registered last, so it wraps everything, including the login check's 401/403 replies."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+    return response
 
 
 # ── auth ─────────────────────────────────────────────────────────────────────
@@ -312,7 +325,8 @@ async def api_accounts_create(request: Request):
                               adult_allowed=bool(body.get("adult_allowed")),
                               can_request=bool(body.get("can_request", True)),
                               can_download=bool(body.get("can_download", False)),
-                              can_upload=bool(body.get("can_upload", False)))
+                              can_upload=bool(body.get("can_upload", False)),
+                              can_ask=bool(body.get("can_ask", False)))
         acct = accounts.public(accounts.get(con, aid))
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -460,6 +474,7 @@ async def api_invite_accept(token: str, request: Request, response: Response):
     finally:
         con.close()
     live._audit(STATE, "invite.accept", {"username": acct["username"]}, "ok")
+    notify.send(cfg, STATE, "account_joined", "New Omnarr account", f"{acct['username']} joined through an invitation.")
     _new_session(request, response, aid)
     return {"ok": True}
 
@@ -504,6 +519,9 @@ async def api_me_update(request: Request):
             if not ok:
                 raise HTTPException(400, msg)
             message.append(msg)
+    for k in ("email", "notify_email"):
+        if k in body:
+            fields[k] = body[k]
     con = state()
     try:
         accounts.update(con, acct["id"], **fields)
@@ -839,15 +857,27 @@ def api_work_requests(wid: str, request: Request):
     return out
 
 
+def _do_screen(body, account_id=None):
+    try:
+        return requests_.seerr_request(cfg, body["kind"], body["tmdb"])
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/api/request/screen")
 async def api_request_screen(request: Request):
     body = await request.json()
     if body.get("kind") not in ("movie", "tv") or not str(body.get("tmdb", "")).isdigit():
         raise HTTPException(400, "kind must be movie|tv and tmdb a number")
-    try:
-        return requests_.seerr_request(cfg, body["kind"], body["tmdb"])
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+    if _needs_approval(request):
+        title = (body.get("title") or "").strip()
+        if not title:
+            try:
+                title = (requests_.seerr_details(cfg, body["kind"], body["tmdb"]) or {}).get("title") or ""
+            except Exception:
+                pass
+        return _queue(request, "screen", title or f"{body['kind']} {body['tmdb']}", body)
+    return _do_screen(body)
 
 
 # ── live detail, actions, activity ───────────────────────────────────────────
@@ -1108,6 +1138,7 @@ async def api_upload(request: Request):
             results.append({"file": name, "ok": False, "message": f"Upload failed: {ex}"})
             continue
         live._audit(STATE, "upload", {"by": me, "file": os.path.basename(final), "bytes": size, "kind": kind}, "ok")
+        notify.send(cfg, STATE, "upload", "New upload", f"{me} uploaded {os.path.basename(final)}.")
         results.append({"file": os.path.basename(final), "ok": True, "message": "Uploaded; it appears after the next library scan"})
     if not results:
         raise HTTPException(400, "No files received (field name: files)")
@@ -1129,16 +1160,22 @@ def api_game_platforms():
         raise HTTPException(502, f"ROMarr: {e}")
 
 
+def _do_game(body, account_id=None):
+    try:
+        return requests_.game_request(cfg, body["game"].strip(), body["platform"].strip())
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/api/request/game")
 async def api_request_game(request: Request):
     body = await request.json()
     game, platform = (body.get("game") or "").strip(), (body.get("platform") or "").strip()
     if not game or not platform:
         raise HTTPException(400, "game and platform are required")
-    try:
-        return requests_.game_request(cfg, game, platform)
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+    if _needs_approval(request):
+        return _queue(request, "game", f"{game} ({platform})", body)
+    return _do_game(body)
 
 
 @app.get("/api/request/search")
@@ -1192,6 +1229,13 @@ async def api_book_download(request: Request):
     rel = body.get("release")
     if not isinstance(rel, dict) or "source" not in rel or "source_id" not in rel:
         raise HTTPException(400, "release with source and source_id required")
+    if _needs_approval(request):
+        return _queue(request, "book_download", body.get("title") or rel.get("title") or "a book", body)
+    return _do_book_download(body, (_account(request) or {}).get("id"))
+
+
+def _do_book_download(body, account_id=None):
+    rel = body["release"]
     try:
         out = requests_.book_download(cfg, rel)
     except Exception as e:
@@ -1203,7 +1247,7 @@ async def api_book_download(request: Request):
         wanted.add(STATE, (w or {}).get("title") or body.get("title") or rel.get("title") or "",
                    ((w or {}).get("authors") or [body.get("author") or ""])[0],
                    fmt, work_id=(w or {}).get("id"), provider=body.get("provider"), book_id=body.get("book_id"),
-                   current=rel.get("source_id"), current_title=rel.get("title"), account_id=(_account(request) or {}).get("id"))
+                   current=rel.get("source_id"), current_title=rel.get("title"), account_id=account_id)
     return out
 
 
@@ -1224,10 +1268,119 @@ async def api_wanted_add(request: Request):
         w = {"id": None, "title": body["title"].strip(), "authors": [(body.get("author") or "").strip()]}
     if not w or fmt not in wanted.FORMATS:
         raise HTTPException(400, "work (or title) and format (ebook|audiobook|comic) required")
-    wid = wanted.add(STATE, w["title"], (w["authors"] or [""])[0], fmt, work_id=w["id"],
-                     provider=body.get("provider"), book_id=body.get("book_id"), account_id=_account(request)["id"])
+    payload = {"title": w["title"], "author": (w["authors"] or [""])[0], "format": fmt, "work": w["id"],
+               "provider": body.get("provider"), "book_id": body.get("book_id")}
+    if _needs_approval(request):
+        return _queue(request, "wanted", f"{w['title']} ({fmt})", payload)
+    return _do_wanted(payload, _account(request)["id"])
+
+
+def _do_wanted(p, account_id=None):
+    wid = wanted.add(STATE, p["title"], p.get("author") or "", p["format"], work_id=p.get("work"),
+                     provider=p.get("provider"), book_id=p.get("book_id"), account_id=account_id)
     threading.Thread(target=_wanted_tick, daemon=True).start()       # first search right away
     return {"ok": True, "id": wid}
+
+
+# ── approvals: "can ask" members' requests wait here for an admin ────────────
+QUEUE_SCHEMA = """CREATE TABLE IF NOT EXISTS request_queue (
+  id INTEGER PRIMARY KEY, account_id INTEGER, kind TEXT, title TEXT, payload TEXT, created REAL,
+  status TEXT, decided_by TEXT, decided_at REAL, note TEXT)"""
+_DO = {"screen": _do_screen, "game": _do_game, "book_download": _do_book_download, "wanted": _do_wanted}
+
+
+def _needs_approval(request):
+    acct = _account(request)
+    return bool(acct) and not accounts.allowed(acct, "can_request")
+
+
+def _queue(request, kind, title, payload):
+    acct = _account(request)
+    con = state()
+    con.execute(QUEUE_SCHEMA)
+    with con:
+        cur = con.execute("INSERT INTO request_queue (account_id, kind, title, payload, created, status) VALUES (?,?,?,?,?,'pending')",
+                          (acct["id"], kind, title[:200], json.dumps(payload), time.time()))
+    con.close()
+    live._audit(STATE, "request.queued", {"by": acct["username"], "kind": kind, "title": title}, "pending")
+    notify.send(cfg, STATE, "approval_needed", "Request waiting for approval",
+                f"{acct['username']} asked for {title}. Approve or deny it in Omnarr (Activity → Requests).", to_admins=True)
+    return {"ok": True, "queued": True, "id": cur.lastrowid, "message": "Sent to an admin for approval"}
+
+
+@app.get("/api/requests")
+def api_requests(request: Request):
+    """Admins: everything pending + recent decisions. Members: their own."""
+    acct = _account(request)
+    con = state()
+    con.execute(QUEUE_SCHEMA)
+    try:
+        q = ("SELECT q.*, a.username FROM request_queue q LEFT JOIN accounts a ON a.id=q.account_id")
+        if acct["role"] == "admin":
+            rows = con.execute(q + " ORDER BY q.status<>'pending', q.created DESC LIMIT 100").fetchall()
+        else:
+            rows = con.execute(q + " WHERE q.account_id=? ORDER BY q.created DESC LIMIT 50", (acct["id"],)).fetchall()
+    finally:
+        con.close()
+    return {"requests": [{"id": r["id"], "kind": r["kind"], "title": r["title"], "status": r["status"], "by": r["username"],
+                          "created": r["created"], "decided_by": r["decided_by"], "decided_at": r["decided_at"],
+                          "note": r["note"]} for r in rows],
+            "pending": sum(1 for r in rows if r["status"] == "pending")}
+
+
+def _decide(request, rid, approve, note=""):
+    me = _account(request)
+    if me["role"] != "admin":
+        raise HTTPException(403, "Only an admin can do that")
+    con = state()
+    con.execute(QUEUE_SCHEMA)
+    row = con.execute("SELECT * FROM request_queue WHERE id=?", (rid,)).fetchone()
+    con.close()
+    if not row or row["status"] != "pending":
+        raise HTTPException(404, "No pending request with that id")
+    status, msg = "denied", note or ""
+    if approve:
+        try:
+            _DO[row["kind"]](json.loads(row["payload"]), row["account_id"])
+            status = "approved"
+        except HTTPException as e:
+            status, msg = "failed", str(e.detail)
+    con = state()
+    with con:
+        con.execute("UPDATE request_queue SET status=?, decided_by=?, decided_at=?, note=? WHERE id=?",
+                    (status, me["username"], time.time(), msg[:300], rid))
+    con.close()
+    live._audit(STATE, f"request.{status}", {"by": me["username"], "title": row["title"]}, status)
+    words = {"approved": "was approved and is on its way", "denied": "was declined", "failed": "was approved but couldn't be started"}
+    notify.send(cfg, STATE, "request_decided", f"Your request: {row['title']}",
+                f"Your request for {row['title']} {words[status]}." + (f" Note: {msg}" if msg else ""), to=[row["account_id"]])
+    return {"ok": status != "failed", "status": status, "message": msg}
+
+
+@app.post("/api/requests/{rid}/approve")
+def api_request_approve(rid: int, request: Request):
+    return _decide(request, rid, True)
+
+
+@app.post("/api/requests/{rid}/deny")
+async def api_request_deny(rid: int, request: Request):
+    body = await request.json() if request.headers.get("content-length") not in (None, "0") else {}
+    return _decide(request, rid, False, (body.get("note") or "").strip())
+
+
+@app.delete("/api/requests/{rid}")
+def api_request_cancel(rid: int, request: Request):
+    """Withdraw your own pending request (admins can remove any pending one)."""
+    me = _account(request)
+    con = state()
+    con.execute(QUEUE_SCHEMA)
+    with con:
+        n = con.execute("DELETE FROM request_queue WHERE id=? AND status='pending' AND (account_id=? OR ?)",
+                        (rid, me["id"], int(me["role"] == "admin"))).rowcount
+    con.close()
+    if not n:
+        raise HTTPException(404, "No pending request of yours with that id")
+    return {"ok": True}
 
 
 @app.post("/api/wanted/{wid}/search")

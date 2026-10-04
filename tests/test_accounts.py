@@ -119,7 +119,7 @@ def test_guest_cannot_trigger_downloads(app2):
         r = member.post(path, json=body)
         assert r.status_code == 403 and "not request" in r.json()["detail"], path
     perms = member.get("/api/auth/status").json()["permissions"]
-    assert perms == {"can_request": False, "can_download": True, "can_upload": False, "adult_allowed": False}
+    assert perms == {"can_request": False, "can_ask": False, "can_download": True, "can_upload": False, "adult_allowed": False}
     assert admin.get("/api/auth/status").json()["permissions"]["can_request"] is True
 
 

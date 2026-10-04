@@ -134,6 +134,11 @@ def _test_stash(s):
     return True, f"Connected: {r.json()['data']['findScenes']['count']} scenes"
 
 
+def _test_notify(s):
+    from .. import notify
+    return notify.test(s)
+
+
 def _test_email(s):
     from .. import mailer
     return mailer.test(s)
@@ -202,6 +207,14 @@ APPS = [
                 {"key": "username", "label": "Username", "type": "text", "required": False, "placeholder": "you@gmail.com"},
                 {"key": "password", "label": "Password / app password", "type": "secret", "required": False},
                 {"key": "from_address", "label": "Send as", "type": "text", "required": False, "placeholder": "Omnarr <you@gmail.com>"}]},
+    {"key": "notifications", "label": "Notifications (webhook)", "category": "Other", "test": _test_notify,
+     "about": "Sends events (a request is ready, a request needs approval, someone joined, an upload arrived) to one URL: "
+              "ntfy, a Discord webhook, a Home Assistant webhook, or anything that accepts JSON. Test sends a real message.",
+     "fields": [{"key": "url", "label": "Webhook URL", "type": "secret", "required": True,
+                 "help": "e.g. https://ntfy.sh/your-topic, a Discord channel webhook, or http://homeassistant:8123/api/webhook/<id>"},
+                {"key": "format", "label": "Format (json, ntfy or discord)", "type": "text", "required": False, "placeholder": "json"},
+                {"key": "events", "label": "Only these events (leave empty for all)", "type": "list", "required": False,
+                 "help": "request_ready, approval_needed, request_decided, account_joined, upload"}]},
 ]
 BY_KEY = {a["key"]: a for a in APPS}
 

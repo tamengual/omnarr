@@ -770,7 +770,23 @@ dialog::backdrop { background: rgba(6, 10, 14, .72); backdrop-filter: blur(4px);
 #upload-form > button { min-height: 44px; }
 #upload-options-form { max-width: 560px; }
 #upload-options-form .field, #upload-options-form input { min-width: 0; }
+/* Approval requests share Activity's list surfaces and connection controls. */
+.approval-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.approval-copy, .approval-actions, .approval-actions .field { min-width: 0; }
+.approval-copy, .approval-row .request-message { overflow-wrap: anywhere; }
+.approval-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.approval-actions .field { flex: 1 1 190px; }
+.approval-actions input { width: 100%; min-width: 0; min-height: 44px; }
+.approval-actions button { min-height: 44px; max-width: 100%; white-space: normal; }
+.approval-note { white-space: pre-wrap; }
+.approval-row .request-message:empty { display: none; }
+#my-account-form .check { align-items: start; }
+#my-account-form input[type="checkbox"] { width: 18px; min-height: 18px; flex: 0 0 auto; }
+#my-account-form .field, #my-account-form input { min-width: 0; }
 @media (max-width: 620px) {
+  .approval-actions .field { flex-basis: 100%; order: 1; }
+  .approval-actions [data-approval-action="deny"] { order: 2; }
+  .approval-actions input { font-size: 16px; }
   .header-actions { gap: 4px; }
   .header-actions:has(#upload-open:not([hidden])) .signed-in-user { display: none; }
   .save-edition { flex-direction: column; gap: 10px; }

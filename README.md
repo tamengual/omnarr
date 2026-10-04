@@ -156,11 +156,21 @@ you've connected an *Email* server in Connections).
 | Switch | What it allows |
 |---|---|
 | Can request downloads | Requests and searches that make your server download things (Seerr, books, games, Sonarr/Radarr actions) |
+| Can ask (needs approval) | Asking for things anyway; each request waits in **Activity → Requests** until an admin approves it |
 | Can save files to their device | Downloading the original ebook, audiobook, comic, movie or game |
 | Can upload files | Uploading their own books and audiobooks to your drop-off folders |
 | Private section | Using the PIN-locked private section (each person sets their own PIN) |
 
 With every switch off, a person is a **guest**: they can browse and play, and that's all.
+
+**Notifications (optional).** In Connections, set up a *Notifications (webhook)* channel
+(ntfy, a Discord webhook, a Home Assistant webhook, or anything that accepts JSON) to hear
+about requests that are ready, requests waiting for approval, new people and uploads. With
+*Email* connected, each person can also add their address in **My account** and get emails
+about their own requests. Admins are emailed when something needs approval.
+
+**On phones**, open Omnarr in Safari or Chrome and choose *Add to Home Screen*. It gets its
+own icon and opens full screen, like an app.
 
 **One account is all they need.** Whatever someone plays in Omnarr (position, finished, their
 "Continue" row) is saved in Omnarr under their account. They never have to create Jellyfin

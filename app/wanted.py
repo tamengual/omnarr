@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 
 from . import normalize, requests_, search
@@ -218,6 +219,10 @@ def tick(cfg, state_path, index_path):
                     # spot them in the index), so a finished download is the success signal
                     from .connectors import komga
                     scanned = komga.scan_all(cfg, state_path)
+                    if scanned:                        # the mover runs every few minutes: scan again later
+                        timer = threading.Timer(600, komga.scan_all, args=(cfg, state_path))
+                        timer.daemon = True            # never keeps Omnarr (or a test run) from exiting
+                        timer.start()
                     upd = {"status": "done", "done_at": now,
                            "note": "downloaded; sent to Komga" + ("" if scanned else " (Komga not connected: scan it yourself)")}
                 elif bucket == "complete" and now - (row["last_search"] or now) > STUCK_DAYS * 86400:
@@ -229,6 +234,11 @@ def tick(cfg, state_path, index_path):
         except Exception as e:
             log.warning("wanted %s (%s) failed: %s", row["id"], row["title"], e)
             upd = {"next_search": now + 3600, "note": f"error: {type(e).__name__}: {e}"[:200]}
+        if upd.get("status") == "done":
+            from . import notify
+            notify.send(cfg, state_path, "request_ready", f"Ready: {row['title']}",
+                        f"{row['title']} ({row['format']}) is now in the library.",
+                        to=[row["account_id"]] if row.get("account_id") else ())
         if upd:
             con = _con(state_path)
             with con:

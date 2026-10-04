@@ -56,6 +56,10 @@ let currentUser = null;
 let permissions = {};
 const isAdmin = () => currentUser?.role === "admin";
 const canRequest = () => isAdmin() || permissions.can_request === true;
+const canSubmitRequest = () => canRequest() || permissions.can_ask === true;
+const requestLabel = (label = "Request") => canRequest() ? label : "Ask for it";
+const requestResultLabel = (result) => result.queued ? "Sent for approval" : "Requested";
+const requestResultMessage = (result, fallback) => result.message || (result.queued ? "Sent to an admin for approval" : fallback);
 const REQUEST_HINT = "Your account can browse and play. Ask an admin to request things.";
 const requestHint = () => `<p class="hint permission-hint">${REQUEST_HINT}</p>`;
 let privateMode = false;
@@ -102,6 +106,10 @@ function clearView() {
   liveCache.clear();
   $("#activity-body").replaceChildren();
   activityData = null;
+  approvalData = null;
+  approvalError = "";
+  approvalNotes.clear();
+  approvalMessages.clear();
   kindFacets = {};
   updateActivityBadge();
   if ($("#detail").open) $("#detail").close();
@@ -1035,13 +1043,14 @@ function applyAccountChrome() {
 
 const ACCOUNT_PERMISSIONS = [
   ["can_request", "Can request downloads", "Searches and downloads on your server: Seerr, books, games, Sonarr/Radarr actions"],
+  ["can_ask", "Can ask for things (needs approval)", "Their requests wait in Activity → Requests until an admin approves them"],
   ["can_download", "Can save files to their device", "Save original library files to their device"],
   ["can_upload", "Can upload files", "Add ebooks, comics, and audiobooks to configured folders"],
   ["adult_allowed", "Private section", "They set their own PIN"],
 ];
 
 function permissionEditor(prefix, account = {}, presets = false) {
-  return `${presets ? '<div class="connection-actions permission-presets"><button type="button" class="secondary-button" data-preset="family">Family (can request)</button><button type="button" class="secondary-button" data-preset="guest">Guest (view &amp; play only)</button></div>' : ""}
+  return `${presets ? '<div class="connection-actions permission-presets"><button type="button" class="secondary-button" data-preset="family">Family</button><button type="button" class="secondary-button" data-preset="friend">Friend (asks first)</button><button type="button" class="secondary-button" data-preset="guest">Guest (view &amp; play only)</button></div>' : ""}
     <label class="field">Role<select name="role"><option value="member"${account.role !== "admin" ? " selected" : ""}>Member</option><option value="admin"${account.role === "admin" ? " selected" : ""}>Admin</option></select></label>
     <div class="permission-switches">${ACCOUNT_PERMISSIONS.map(([key, label, help]) => `<div><label class="check" for="${prefix}-${key}"><input id="${prefix}-${key}" name="${key}" type="checkbox" role="switch" aria-describedby="${prefix}-${key}-help"${account[key] ? " checked" : ""}><span>${label}</span></label><p id="${prefix}-${key}-help" class="hint">${help}</p></div>`).join("")}</div>
     <p class="hint admin-permissions-help"${account.role === "admin" ? "" : " hidden"}>Admins can request, save, and upload. Private access keeps its per-person setting.</p>`;
@@ -1054,14 +1063,20 @@ function syncPermissionEditor(root) {
     input.disabled = admin;
     if (admin && key !== "adult_allowed") input.checked = true;
   });
+  const ask = $('[name="can_ask"]', root);
+  const direct = $('[name="can_request"]', root).checked;
+  ask.disabled = admin || direct;
+  $(`#${ask.id}-help`, root).textContent = ACCOUNT_PERMISSIONS.find(([key]) => key === "can_ask")[2]
+    + (direct ? ". Turn off Can request downloads to require approval." : "");
   $(".admin-permissions-help", root).hidden = !admin;
 }
 
 function bindPermissionEditor(root) {
   $('[name="role"]', root).addEventListener("change", () => syncPermissionEditor(root));
+  $('[name="can_request"]', root).addEventListener("change", () => syncPermissionEditor(root));
   $$("[data-preset]", root).forEach((button) => button.addEventListener("click", () => {
     $('[name="role"]', root).value = "member";
-    ACCOUNT_PERMISSIONS.forEach(([key]) => { $(`[name="${key}"]`, root).checked = key === "can_request" && button.dataset.preset === "family"; });
+    ACCOUNT_PERMISSIONS.forEach(([key]) => { $(`[name="${key}"]`, root).checked = (key === "can_request" && button.dataset.preset === "family") || (key === "can_ask" && button.dataset.preset === "friend"); });
     syncPermissionEditor(root);
   }));
   syncPermissionEditor(root);
@@ -1100,6 +1115,8 @@ async function loadMyAccount() {
     if (controller !== settingsController) return;
     $('[name="jellyfin_user"]', form).value = account.jellyfin_user || "";
     $('[name="abs_api_key"]', form).value = account.abs_api_key || "";
+    form.elements.email.value = account.email || "";
+    form.elements.notify_email.checked = account.notify_email === true;
     $("#account-identity").hidden = !isAdmin() || !account.uses_server_identity;
     $$("input, button[type=submit]", form).forEach((control) => { control.disabled = false; });
     connectionMessage($("#account-message"), "");
@@ -1114,7 +1131,7 @@ $("#account-retry").addEventListener("click", loadMyAccount);
 $("#my-account-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const payload = { jellyfin_user: $('[name="jellyfin_user"]', form).value.trim(), abs_api_key: $('[name="abs_api_key"]', form).value.trim() };
+  const payload = { jellyfin_user: $('[name="jellyfin_user"]', form).value.trim(), abs_api_key: $('[name="abs_api_key"]', form).value.trim(), email: form.elements.email.value.trim(), notify_email: form.elements.notify_email.checked };
   accountOperation(form, $("#account-message"), async (signal, current) => {
     const result = await api("api/me", { method: "POST", body: JSON.stringify(payload), signal });
     if (!current()) return;
@@ -1566,13 +1583,13 @@ function hintedGamePlatform(title, platforms) {
 }
 
 function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
-  if (!canRequest()) { root.innerHTML = requestHint(); return; }
+  if (!canSubmitRequest()) { root.innerHTML = requestHint(); return; }
   const messageId = `game-request-message-${++gamePickerSequence}`;
   root.innerHTML = `<form class="game-request-form" aria-label="Request a game" aria-describedby="${messageId}">
     ${editable ? `<label class="game-title-field">Game title<input name="game" required value="${esc(title)}" autocomplete="off"></label>` : ""}
     <label>Filter platforms<input type="search" name="platform-filter" placeholder="Type to filter" autocomplete="off" disabled></label>
     <label>Platform<select name="platform" required disabled><option value="">Choose a platform</option></select></label>
-    <button class="secondary-button" type="submit" disabled>Request a game</button>
+    <button class="secondary-button" type="submit" disabled>${requestLabel("Request a game")}</button>
     <p class="request-message hint" id="${messageId}" aria-live="polite" aria-atomic="true" tabindex="-1">Loading platforms…</p>
   </form>`;
   const form = $("form", root);
@@ -1586,7 +1603,7 @@ function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
   let requested = false;
   const updateSubmit = () => {
     const platform = platforms.find((item) => item.slug === select.value);
-    submit.textContent = platform ? `Request for ${platform.name}` : "Request a game";
+    submit.textContent = requestLabel(platform ? `Request for ${platform.name}` : "Request a game");
     submit.disabled = busy || requested || !platform || !(input ? input.value : title).trim();
   };
   const showPlatforms = () => {
@@ -1630,13 +1647,13 @@ function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
     message.textContent = "Submitting request…";
     if (hadFocus) message.focus();
     try {
-      await api("api/request/game", { method: "POST", body: JSON.stringify({ game, platform: platform.slug }) });
+      const result = await api("api/request/game", { method: "POST", body: JSON.stringify({ game, platform: platform.slug }) });
       requested = true;
       if (!root.isConnected) return;
-      submit.textContent = "Requested";
+      submit.textContent = requestResultLabel(result);
       submit.className = "request-pill";
-      message.textContent = `${game} requested for ${platform.name}.`;
-      if (onSuccess) onSuccess(message.textContent, hadFocus && form.contains(document.activeElement));
+      message.textContent = requestResultMessage(result, `${game} requested for ${platform.name}.`);
+      if (onSuccess) onSuccess(message.textContent, hadFocus && form.contains(document.activeElement), result);
       else if (hadFocus && form.contains(document.activeElement)) message.focus();
     } catch (error) {
       if (!root.isConnected) return;
@@ -1658,20 +1675,20 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
     let action;
     if (item.status === "available") {
       action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${search ? "Available" : "In Jellyfin"}</span>`;
-    } else if (!canRequest()) {
+    } else if (!canSubmitRequest()) {
       action = '<span class="hint">Not available to play yet</span>';
-    } else if (["requested", "partial"].includes(item.status)) {
-      action = `<button class="request-pill" type="button" disabled>${item.status === "partial" ? "Partly available" : "Requested"}</button>`;
+    } else if (["requested", "partial", "pending"].includes(item.status)) {
+      action = `<button class="request-pill" type="button" disabled>${item.status === "pending" ? "Sent for approval" : item.status === "partial" ? "Partly available" : "Requested"}</button>`;
     } else if (["book", "comic"].includes(item.kind) && item.status === "not_requested") {
-      action = `<button class="secondary-button" type="button" data-book-request aria-expanded="false" aria-label="Request ${esc(title)}">Request</button>`;
+      action = `<button class="secondary-button" type="button" data-book-request aria-expanded="false" aria-label="${requestLabel()} · ${esc(title)}">${requestLabel()}</button>`;
     } else if (["book", "comic"].includes(item.kind)) {
       action = '<span class="request-pill">Not in your library</span>';
     } else if (item.kind === "game" && item.status === "no_requester") {
       action = '<span class="hint">Games can\'t be requested automatically</span>';
     } else if (item.kind === "game" && item.status === "not_requested" && romarrEnabled) {
-      action = `<button class="secondary-button" type="button" data-game-request aria-expanded="false" aria-label="Request ${esc(title)}">Request</button>`;
+      action = `<button class="secondary-button" type="button" data-game-request aria-expanded="false" aria-label="${requestLabel()} · ${esc(title)}">${requestLabel()}</button>`;
     } else if (item.status === "not_requested" && seerrEnabled && item.tmdb && ["movie", "tv"].includes(item.kind)) {
-      action = `<button class="secondary-button" type="button" data-request aria-label="Request ${esc(title)}">Request</button>`;
+      action = `<button class="secondary-button" type="button" data-request aria-label="${requestLabel()} · ${esc(title)}">${requestLabel()}</button>`;
     } else {
       const label = item.status === "blocked" ? "Request blocked" : item.status === "unknown" ? "Availability unknown" : "Requests unavailable";
       action = `<span class="request-pill">${label}</span>`;
@@ -1697,12 +1714,12 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
         gameButton.setAttribute("aria-expanded", String(!picker.hidden));
         if (picker.hidden) return;
         if (!picker.hasChildNodes()) renderGameRequest(picker, item.label || item.title || "", {
-          onSuccess: (text, focus) => {
-            item.status = "requested";
-            gameButton.textContent = "Requested";
+          onSuccess: (text, focus, result) => {
+            item.status = result.queued ? "pending" : "requested";
+            gameButton.textContent = requestResultLabel(result);
             gameButton.className = "request-pill";
             gameButton.disabled = true;
-            gameButton.setAttribute("aria-label", `${item.label || item.title} requested`);
+            gameButton.setAttribute("aria-label", `${requestResultLabel(result)} · ${item.label || item.title}`);
             gameButton.setAttribute("aria-expanded", "false");
             picker.hidden = true;
             const message = $(".request-message", card);
@@ -1723,15 +1740,15 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
       button.textContent = "Requesting…";
       message.textContent = "";
       try {
-        await api("api/request/screen", { method: "POST", body: JSON.stringify({ kind: item.kind, tmdb: item.tmdb }) });
-        item.status = "requested";
-        button.textContent = "Requested";
+        const result = await api("api/request/screen", { method: "POST", body: JSON.stringify({ kind: item.kind, tmdb: item.tmdb, title: item.title || item.label || "" }) });
+        item.status = result.queued ? "pending" : "requested";
+        button.textContent = requestResultLabel(result);
         button.className = "request-pill";
-        button.setAttribute("aria-label", `${item.label || item.title} requested`);
-        message.textContent = "Request sent.";
+        button.setAttribute("aria-label", `${requestResultLabel(result)} · ${item.label || item.title}`);
+        message.textContent = requestResultMessage(result, "Request sent.");
       } catch (error) {
         button.disabled = false;
-        button.textContent = "Request";
+        button.textContent = requestLabel();
         message.textContent = error.message === "login" ? "Sign in to request this title." : error.message;
       }
     });
@@ -1750,12 +1767,20 @@ function bindRelatedBookRequest(card, button, item) {
   const title = item.label || item.title || "";
   const target = { title, author: (item.authors || [])[0] || "" };
   const message = $(".request-message", card);
-  const done = (text) => {
-    button.textContent = "Requested";
+  const done = (text, result) => {
+    item.status = result.queued ? "pending" : "requested";
+    button.textContent = requestResultLabel(result);
+    button.setAttribute("aria-label", `${requestResultLabel(result)} · ${title}`);
     button.className = "request-pill";
     button.disabled = true;
     button.setAttribute("aria-expanded", "false");
-    message.textContent = text;
+    message.textContent = requestResultMessage(result, text);
+    if (result.queued) {
+      const hadFocus = panel.contains(document.activeElement) || document.activeElement === button;
+      panel.hidden = true;
+      message.tabIndex = -1;
+      if (hadFocus) message.focus();
+    }
   };
   // One click, like movies and shows: Request -> Omnarr keeps looking until it finds a good copy
   // (books ask ebook or audiobook first). "Choose a copy myself" is there for picking by hand.
@@ -1772,7 +1797,7 @@ function bindRelatedBookRequest(card, button, item) {
     link.addEventListener("click", () => {
       panel.hidden = false;
       openBookPicker(picker, target, format, link, new AbortController().signal, () => request(format),
-        () => done(`Your chosen copy of the ${LABEL[format]} has been requested. If it fails, Omnarr finds another.`));
+        (result) => done(`Your chosen copy of the ${LABEL[format]} has been requested. If it fails, Omnarr finds another.`, result));
     });
     return [link, picker];
   };
@@ -1782,14 +1807,15 @@ function bindRelatedBookRequest(card, button, item) {
     button.textContent = "Requesting…";
     message.textContent = "";
     try {
-      await api("api/wanted", { method: "POST", body: JSON.stringify({ ...target, format }) });
-      done(`Requested. Omnarr keeps looking for the ${LABEL[format]} until it finds a good copy.`);
+      const result = await api("api/wanted", { method: "POST", body: JSON.stringify({ ...target, format }) });
+      done(`Requested. Omnarr keeps looking for the ${LABEL[format]} until it finds a good copy.`, result);
+      if (result.queued) return;
       const [link, picker] = manualLink(format);
       panel.replaceChildren(link, picker);
       panel.hidden = false;
     } catch (error) {
       button.disabled = false;
-      button.textContent = "Request";
+      button.textContent = requestLabel();
       $$("button", panel).forEach((b) => { b.disabled = false; });
       message.textContent = error.message === "login" ? "Sign in to request this." : error.message;
     }
@@ -1799,7 +1825,7 @@ function bindRelatedBookRequest(card, button, item) {
     panel.hidden = !panel.hidden;
     button.setAttribute("aria-expanded", String(!panel.hidden));
     if (panel.hidden) return;
-    panel.innerHTML = `<p class="hint">Which format? Omnarr keeps looking until it finds a good copy.</p><div class="request-card-actions"><button class="secondary-button" type="button" data-format="ebook">Ebook</button><button class="secondary-button" type="button" data-format="audiobook">Audiobook</button></div>`;
+    panel.innerHTML = `<p class="hint">Which format? ${canRequest() ? "Omnarr keeps looking until it finds a good copy." : "An admin will review your request."}</p><div class="request-card-actions"><button class="secondary-button" type="button" data-format="ebook">Ebook</button><button class="secondary-button" type="button" data-format="audiobook">Audiobook</button></div>`;
     $$("[data-format]", panel).forEach((b) => b.addEventListener("click", () => request(b.dataset.format)));
     $("[data-format]", panel).focus();
   });
@@ -1823,7 +1849,7 @@ function renderRequestSearch() {
   section.id = "request-search";
   section.className = "request-search";
   section.setAttribute("aria-label", "Search titles to request");
-  if (!canRequest()) {
+  if (!canSubmitRequest()) {
     section.innerHTML = requestHint();
     $("#results-view").append(section);
     return;
@@ -1833,6 +1859,7 @@ function renderRequestSearch() {
   const gameRequest = $("#search-game-request", section);
   renderGameRequest($("[data-game-form]", gameRequest), query, { editable: true });
   const gameToggle = $("[data-game-toggle]", section);
+  gameToggle.textContent = requestLabel("Request a game");
   gameToggle.addEventListener("click", () => {
     gameRequest.hidden = !gameRequest.hidden;
     gameToggle.setAttribute("aria-expanded", String(!gameRequest.hidden));
@@ -1888,7 +1915,7 @@ function findWanted(items, workId, title, format) {
 }
 
 function openBookPicker(root, workId, format, opener, detailSignal, keepLooking, onDownloaded) {
-  if (!canRequest()) { root.innerHTML = requestHint(); return; }
+  if (!canSubmitRequest()) { root.innerHTML = requestHint(); return; }
   // workId is a library work id, or { title, author } for a book/comic that isn't in the library
   const target = typeof workId === "string" ? { work: workId } : { title: workId.title || "", author: workId.author || "" };
   let controller;
@@ -1975,13 +2002,13 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
         const keep = document.createElement("button");
         keep.type = "button";
         keep.className = "primary-button";
-        keep.textContent = "Keep looking for me";
+        keep.textContent = requestLabel("Keep looking for me");
         keep.addEventListener("click", keepLooking);
         options.prepend(keep);
         return;
       }
       progress.textContent = "Choose a release to request.";
-      options.innerHTML = releases.map((release) => `<button class="request-option" type="button"><span class="request-option-copy"><strong>${esc(release.title || candidate.title || "Untitled release")}</strong><small>${esc(releaseDetails(release))}</small></span><span class="request-option-verb">Request</span></button>`).join("");
+      options.innerHTML = releases.map((release) => `<button class="request-option" type="button"><span class="request-option-copy"><strong>${esc(release.title || candidate.title || "Untitled release")}</strong><small>${esc(releaseDetails(release))}</small></span><span class="request-option-verb">${requestLabel()}</span></button>`).join("");
       $$("button", options).forEach((button, index) => button.addEventListener("click", async () => {
         if (button.disabled) return;
         $$("button", options).forEach((item) => { item.disabled = true; });
@@ -1989,9 +2016,9 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
         progress.textContent = "Submitting request…";
         try {
           // Keep the opaque Shelfmark release intact, including all provider fields.
-          await api("api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], ...target, format, provider: candidate.provider, book_id: candidate.book_id }) });
+          const result = await api("api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], ...target, format, provider: candidate.provider, book_id: candidate.book_id }) });
           if (!active() || current !== step) return;
-          onDownloaded();
+          onDownloaded(result);
         } catch (error) {
           if (!active() || current !== step) return;
           progress.textContent = error.message;
@@ -2015,11 +2042,11 @@ async function loadWorkRequests(root, workId, result, signal, work) {
     message.textContent = "Request options couldn’t be loaded right now.";
     return;
   }
-  const formats = (canRequest() ? data.missing_formats || [] : []).filter((format) => ["ebook", "audiobook"].includes(format));
+  const formats = (canSubmitRequest() ? data.missing_formats || [] : []).filter((format) => ["ebook", "audiobook"].includes(format));
   const adaptations = [...(data.adaptations || [])].sort((a, b) => (Number(a.year) || Infinity) - (Number(b.year) || Infinity));
   const screens = adaptations.filter((item) => ["movie", "tv", "game"].includes(item.kind));
   const reading = adaptations.filter((item) => ["book", "comic"].includes(item.kind));
-  message.textContent = !canRequest() ? REQUEST_HINT : !formats.length && !adaptations.length ? "Nothing related found yet." : "";
+  message.textContent = !canSubmitRequest() ? REQUEST_HINT : !formats.length && !adaptations.length ? "Nothing related found yet." : "";
   const content = $("[data-request-content]", root);
   content.innerHTML = `${formats.length ? `<div class="request-group"><h4>Also available to request</h4>${!data.shelfmark_enabled ? '<p class="hint" id="shelfmark-hint">Connect Shelfmark in config to request books</p>' : ""}${formats.map((format) => `<div class="book-request" data-book-format="${format}"><h5>Request the ${format}</h5><div data-book-options><p class="hint">Checking wanted status…</p></div><p class="hint request-message" data-book-message role="status" tabindex="-1"></p></div>`).join("")}</div>` : ""}${screens.length ? '<div class="request-group"><h4>On screen &amp; in games</h4><div class="request-grid" data-related="screens"></div></div>' : ""}${reading.length ? '<div class="request-group"><h4>Books &amp; comics</h4><div class="request-grid" data-related="reading"></div></div>' : ""}`;
   if (screens.length) renderRequestCards($('[data-related="screens"]', content), screens, data.seerr_enabled, false, data.romarr_enabled);
@@ -2045,6 +2072,11 @@ async function loadWorkRequests(root, workId, result, signal, work) {
       const format = row.dataset.bookFormat;
       const options = $("[data-book-options]", row);
       const status = $("[data-book-message]", row);
+      const showQueued = (result) => {
+        options.innerHTML = '<button class="request-pill" type="button" disabled>Sent for approval</button>';
+        status.textContent = requestResultMessage(result, "");
+        status.focus();
+      };
       const showStatus = (item, focus = false) => {
         options.innerHTML = wantedStatus(item);
         if (focus) {
@@ -2056,7 +2088,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
       if (existing) { showStatus(existing); return; }
       const disabled = data.shelfmark_enabled ? "" : " disabled";
       const description = `wanted-help-${format}${data.shelfmark_enabled ? "" : " shelfmark-hint"}`;
-      options.innerHTML = `<div class="book-request-actions"><button class="primary-button" type="button" data-auto aria-describedby="${description}"${disabled}>Get it for me</button><button class="secondary-button" type="button" data-manual aria-expanded="false" aria-controls="picker-${format}" aria-describedby="${description}"${disabled}>Choose a copy myself</button></div><p class="hint" id="wanted-help-${format}">Omnarr picks a good copy and keeps trying every 3 days until it arrives</p><div class="request-picker" id="picker-${format}" hidden></div>`;
+      options.innerHTML = `<div class="book-request-actions"><button class="primary-button" type="button" data-auto aria-describedby="${description}"${disabled}>${requestLabel("Get it for me")}</button><button class="secondary-button" type="button" data-manual aria-expanded="false" aria-controls="picker-${format}" aria-describedby="${description}"${disabled}>Choose a copy myself</button></div><p class="hint" id="wanted-help-${format}">${canRequest() ? "Omnarr picks a good copy and keeps trying every 3 days until it arrives" : "Your request waits in Activity → Requests until an admin approves it."}</p><div class="request-picker" id="picker-${format}" hidden></div>`;
       let submitting = false;
       const keepLooking = async () => {
         if (submitting || signal.aborted || !root.isConnected) return;
@@ -2065,8 +2097,9 @@ async function loadWorkRequests(root, workId, result, signal, work) {
         buttons.forEach(([button]) => { button.disabled = true; });
         status.textContent = "Adding to books we’re looking for…";
         try {
-          await api("api/wanted", { method: "POST", body: JSON.stringify({ work: workId, format }) });
+          const result = await api("api/wanted", { method: "POST", body: JSON.stringify({ work: workId, format }) });
           if (signal.aborted || !root.isConnected) return;
+          if (result.queued) { showQueued(result); return; }
           showStatus({ format, status: "searching", note: "Omnarr is looking for a good copy." }, true);
         } catch (error) {
           if (signal.aborted || !root.isConnected) return;
@@ -2082,7 +2115,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
         const picker = $(".request-picker", options);
         if (!picker.hidden) { $("h4", picker).focus(); return; }
         $("[data-auto]", options).disabled = true;
-        openBookPicker(picker, workId, format, manual, signal, keepLooking, () => showStatus({ format, status: "downloading", note: "Your chosen copy has been requested." }, true));
+        openBookPicker(picker, workId, format, manual, signal, keepLooking, (result) => result.queued ? showQueued(result) : showStatus({ format, status: "downloading", note: "Your chosen copy has been requested." }, true));
       };
     });
   }
@@ -2420,6 +2453,11 @@ let activityData = null;
 let activityController;
 let activityTimer;
 let activityUpdated = 0;
+let approvalData = null;
+let approvalError = "";
+const approvalPending = new Set();
+const approvalNotes = new Map();
+const approvalMessages = new Map();
 const wantedPending = new Set();
 const wantedMessages = new Map();
 
@@ -2472,6 +2510,91 @@ function updateActivityBadge() {
   badge.hidden = !active;
   badge.textContent = countText(active);
   badge.setAttribute("aria-label", `${countText(active)} active items reported`);
+  let pendingBadge = $("#requests-badge");
+  if (!pendingBadge) {
+    pendingBadge = document.createElement("span");
+    pendingBadge.id = "requests-badge";
+    pendingBadge.className = "activity-badge";
+    badge.after(pendingBadge);
+  }
+  const pending = Math.max(0, Number(approvalData?.pending) || 0);
+  pendingBadge.hidden = !isAdmin() || !pending;
+  pendingBadge.textContent = `${countText(pending)} pending`;
+  pendingBadge.setAttribute("aria-label", `${countText(pending)} requests awaiting approval`);
+}
+
+function approvalTime(value) {
+  if (value == null || value === "") return "Date unavailable";
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function approvalQueue() {
+  const error = approvalError ? `<p class="service-error" role="status">${esc(approvalError)} Use Refresh to try again.${approvalData ? " Showing the last requests update." : ""}</p>` : "";
+  if (!approvalData) return error || '<p class="hint">Loading requests…</p>';
+  const requests = [...(approvalData.requests || [])].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
+  if (!requests.length) return `${error}<p class="hint">${isAdmin() ? "No requests for approval yet." : "You haven’t asked for anything yet."}</p>`;
+  return `${error}<ul class="activity-list approval-list">${requests.map((request) => {
+    const id = String(request.id);
+    const title = request.title || "Untitled request";
+    const state = ["pending", "approved", "denied", "failed"].includes(request.status) ? request.status : "unknown";
+    const tone = { pending: "state-coming", approved: "state-available", denied: "state-missing", failed: "state-missing" }[state] || "state-neutral";
+    const kind = { screen: "Movie / TV", game: "Game", book_download: "Book download", wanted: "Book / comic" }[request.kind] || request.kind;
+    const disabled = approvalPending.has(id) ? " disabled" : "";
+    const person = (value) => typeof value === "object" && value !== null ? value.username || value.id || "" : value;
+    return `<li class="approval-row" data-approval-id="${esc(id)}" tabindex="-1"><div class="approval-copy"><strong>${esc(title)}</strong><p class="hint">${esc(kind)} · ${esc(approvalTime(request.created))}${request.by != null ? ` · Asked by ${esc(person(request.by))}` : ""}</p><span class="state-chip ${tone}">${esc(state)}</span>${request.decided_by != null || request.decided_at != null ? `<p class="hint">${request.decided_by != null ? `Decided by ${esc(person(request.decided_by))}` : "Decided"}${request.decided_at != null ? ` · ${esc(approvalTime(request.decided_at))}` : ""}</p>` : ""}${request.note ? `<p class="hint approval-note">${esc(request.note)}</p>` : ""}</div>
+      ${state === "pending" ? isAdmin() ? `<form class="approval-actions" aria-label="Review ${esc(title)}"><button class="primary-button" type="button" data-approval-action="approve" aria-label="Approve ${esc(title)}"${disabled}>Approve</button><label class="field">Denial note (optional)<input name="note" data-approval-focus="note" value="${esc(approvalNotes.get(id) || "")}" autocomplete="off"${disabled}></label><button class="secondary-button" type="submit" data-approval-action="deny" aria-label="Deny ${esc(title)}"${disabled}>Deny</button></form>` : `<div class="approval-actions"><button class="text-button" type="button" data-approval-action="withdraw" aria-label="Withdraw ${esc(title)}"${disabled}>Withdraw</button></div>` : ""}
+      <p class="hint request-message" role="status" tabindex="-1" data-approval-focus="message">${esc(approvalMessages.get(id) || "")}</p></li>`;
+  }).join("")}</ul>`;
+}
+
+function bindApprovalQueue(root) {
+  $$("[data-approval-id]", root).forEach((row) => {
+    const id = row.dataset.approvalId;
+    const note = $('[name="note"]', row);
+    note?.addEventListener("input", () => approvalNotes.set(id, note.value));
+    $("form", row)?.addEventListener("submit", (event) => { event.preventDefault(); decide("deny"); });
+    $$("[data-approval-action]", row).filter((button) => button.type !== "submit").forEach((button) => button.addEventListener("click", () => decide(button.dataset.approvalAction)));
+    async function decide(action) {
+      if (approvalPending.has(id) || !activityVisible() || (action !== "withdraw" && !isAdmin())) return;
+      const epoch = viewEpoch;
+      const hadFocus = row.contains(document.activeElement);
+      const message = $('[role="status"]', row);
+      approvalPending.add(id);
+      activityController?.abort();
+      activityController = null;
+      $$("button, input", row).forEach((control) => { control.disabled = true; });
+      message.textContent = action === "withdraw" ? "Withdrawing…" : "Saving decision…";
+      approvalMessages.set(id, message.textContent);
+      if (hadFocus) message.focus();
+      try {
+        const result = await api(`api/requests/${encodeURIComponent(id)}${action === "withdraw" ? "" : `/${action}`}`, {
+          method: action === "withdraw" ? "DELETE" : "POST",
+          ...(action === "deny" ? { body: JSON.stringify({ note: note.value.trim() }) } : {}),
+        });
+        if (epoch !== viewEpoch) return;
+        if (result.ok === false) throw new Error(result.message || "The request could not be updated.");
+        approvalMessages.set(id, result.message || (action === "withdraw" ? "Request withdrawn." : action === "approve" ? "Request approved." : "Request denied."));
+        approvalNotes.delete(id);
+        if (approvalData) {
+          const request = approvalData.requests.find((item) => String(item.id) === id);
+          if (request?.status === "pending") approvalData.pending = Math.max(0, approvalData.pending - 1);
+          if (action === "withdraw") approvalData.requests = approvalData.requests.filter((item) => String(item.id) !== id);
+          else if (request) Object.assign(request, { status: result.status || (action === "approve" ? "approved" : "denied"), note: action === "deny" ? note.value.trim() : request.note, decided_by: currentUser?.username, decided_at: Date.now() / 1000 });
+        }
+        if (action === "withdraw" && activityVisible()) $("#activity-status").textContent = approvalMessages.get(id);
+      } catch (error) {
+        if (epoch === viewEpoch && error.message !== "login") approvalMessages.set(id, error.message);
+      } finally {
+        approvalPending.delete(id);
+        if (epoch === viewEpoch) {
+          updateActivityBadge();
+          if (activityVisible()) renderActivity(activityData || {});
+          refreshActivity();
+        }
+      }
+    }
+  });
 }
 
 function serviceError(value, name) {
@@ -2537,7 +2660,7 @@ function genericActivity(value, name, empty) {
 }
 
 function wantedActivity(items) {
-  return `${canRequest() ? "" : requestHint()}<ul class="activity-list wanted-list">${(items || []).map((item) => {
+  return `${canSubmitRequest() ? "" : requestHint()}<ul class="activity-list wanted-list">${(items || []).map((item) => {
     const id = String(item.id);
     const context = `${item.title || "Untitled book"} (${item.format})`;
     const disabled = wantedPending.has(id) ? " disabled" : "";
@@ -2584,14 +2707,19 @@ function bindWantedActivity(root, items) {
 
 function renderActivity(data) {
   const root = $("#activity-body");
+  const active = document.activeElement;
+  const focusedApproval = active.closest?.("[data-approval-id]")?.dataset.approvalId;
+  const approvalFocus = active.dataset?.approvalFocus || active.dataset?.approvalAction;
+  const selection = active.matches('input[name="note"]') ? [active.selectionStart, active.selectionEnd] : null;
   const disclosures = new Map($$("[data-disclosure]", root).map((node) => [node.dataset.disclosure, node.open]));
   const focused = root.contains(document.activeElement) ? document.activeElement.closest("[data-disclosure]")?.dataset.disclosure : null;
   const focusedWanted = document.activeElement.closest?.("[data-wanted-id]")?.dataset.wantedId;
   const focusedAction = document.activeElement.dataset?.wantedAction;
   const games = serviceError(data.games, "ROMarr") || `<h3>Download queue</h3>${genericActivity(data.games?.queue, "Game queue", "No games downloading.")}<details class="activity-overflow" data-disclosure="wanted-games"><summary>Wanted games</summary>${genericActivity(data.games?.wanted, "Wanted games", "No missing games on the wanted list.")}</details>`;
   const logs = serviceError(data.logs, "Logs") || [["readalong_linker", "Read-along linker"], ["stash_identify", "Stash identify"]].map(([key, label]) => `<h3>${label}</h3><pre class="log-tail">${esc(Array.isArray(data.logs?.[key]) && data.logs[key].length ? data.logs[key].join("\n") : "No log lines reported.")}</pre>`).join("");
-  root.innerHTML = activitySection("Downloads", "Sonarr + Radarr", downloadGroups(data))
-    + activitySection("Requests", "Seerr", requestActivity(data.requests))
+  root.innerHTML = activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue())
+    + activitySection("Downloads", "Sonarr + Radarr", downloadGroups(data))
+    + activitySection("Movie & TV requests", "Seerr", requestActivity(data.requests))
     + activitySection("Games", "ROMarr", games)
     + activitySection("Books", "Shelfmark", genericActivity(data.books, "Books", "No active book downloads."))
     + activitySection("Books we’re looking for", "Omnarr", wantedActivity(data.wanted_books))
@@ -2602,6 +2730,13 @@ function renderActivity(data) {
     if (focused === node.dataset.disclosure) $("summary", node)?.focus({ preventScroll: true });
   });
   bindWantedActivity(root, data.wanted_books);
+  bindApprovalQueue(root);
+  if (focusedApproval) {
+    const row = $$("[data-approval-id]", root).find((node) => node.dataset.approvalId === focusedApproval);
+    const control = row && $$("[data-approval-focus], [data-approval-action]", row).find((node) => (node.dataset.approvalFocus || node.dataset.approvalAction) === approvalFocus);
+    (control && !control.disabled && control.getClientRects().length ? control : row || $("#activity-title")).focus({ preventScroll: true });
+    if (selection && control?.matches("input")) control.setSelectionRange(...selection);
+  }
   if (focusedWanted) {
     const row = $$("[data-wanted-id]", root).find((row) => row.dataset.wantedId === focusedWanted);
     const button = row && $$("[data-wanted-action]", row).find((button) => button.dataset.wantedAction === focusedAction);
@@ -2610,15 +2745,27 @@ function renderActivity(data) {
 }
 
 async function refreshActivity(render = true) {
-  if ($("#app").hidden || privateMode || document.hidden || activityController || wantedPending.size) return;
+  if ($("#app").hidden || privateMode || document.hidden || activityController || wantedPending.size || approvalPending.size) return;
   const controller = new AbortController();
   activityController = controller;
   const button = $("#activity-refresh");
   button.disabled = true;
   const timeout = setTimeout(() => controller.abort(), 45000);
   try {
-    const data = await api("api/activity", { signal: controller.signal, cache: "no-store" });
-    if (controller.signal.aborted) return;
+    const [activityResult, approvalResult] = await Promise.allSettled([
+      api("api/activity", { signal: controller.signal, cache: "no-store" }),
+      api("api/requests", { signal: controller.signal, cache: "no-store" }),
+    ]);
+    if (activityController !== controller) return;
+    if (controller.signal.aborted) throw new Error("The request timed out.");
+    if (approvalResult.status === "fulfilled") { approvalData = approvalResult.value; approvalError = ""; }
+    else approvalError = `Couldn’t refresh requests. ${approvalResult.reason.message}`;
+    updateActivityBadge();
+    if (activityResult.status === "rejected") {
+      if (render && activityVisible()) renderActivity(activityData || {});
+      throw activityResult.reason;
+    }
+    const data = activityResult.value;
     activityData = data;
     activityUpdated = Date.now();
     updateActivityBadge();
@@ -2629,7 +2776,7 @@ async function refreshActivity(render = true) {
   } catch (error) {
     if (activityController !== controller || error.message === "login") return;
     if (render && activityVisible()) {
-      if (!activityData) $("#activity-body").innerHTML = '<p class="hint">Activity could not be loaded. Use Refresh to try again.</p>';
+      if (!activityData && !approvalData) $("#activity-body").innerHTML = '<p class="hint">Activity could not be loaded. Use Refresh to try again.</p>';
       $("#activity-status").textContent = `Couldn’t refresh Activity. ${controller.signal.aborted ? "The request timed out." : error.message}${activityData ? ` Showing the last update from ${new Date(activityUpdated).toLocaleTimeString()}.` : ""}`;
     }
   } finally {
