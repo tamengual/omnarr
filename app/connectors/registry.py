@@ -156,6 +156,7 @@ APPS = [
                  "help": "Path INSIDE the Omnarr container. Mount your Calibre library folder read-only, e.g. /path/to/calibre:/src/calibre:ro."},
                 {"key": "library", "label": "Library folder", "type": "path", "required": True, "placeholder": "/src/calibre"},
                 {"key": "hide_tags", "label": "Hide books with these tags", "type": "list", "required": False, "placeholder": "not-mine"},
+                {"key": "adult_tags", "label": "Private-section tags (default: NSFW, XXX, 18+)", "type": "list", "required": False, "placeholder": "NSFW"},
                 {**BROWSER, "label": "Calibre-Web address", "help": "Where \"Read\" opens the book, e.g. http://host:8083."}]},
     {"key": "abs", "label": "Audiobookshelf", "category": "Books", "test": _test_abs,
      "about": "Audiobooks, listening progress, and in-app listening.",

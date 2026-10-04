@@ -8,6 +8,7 @@ import httpx
 from .base import Unit, ro_connect, year_of
 
 AUTHOR_ROLES = ("writer", "author", "penciller", "artist", "")
+ADULT_AGE = 18   # Komga age rating (ComicInfo "Adults Only 18+" sets 18): behind the private-section PIN
 
 
 def api_mode(s):
@@ -64,6 +65,7 @@ def _read_api(cfg, s):
                 year=year_of(m.get("releaseDate")),
                 description=(m.get("summary") or sm.get("summary") or "").strip(),
                 genres=sm.get("genres") or [], tags=m.get("tags") or [],
+                adult=(sm.get("ageRating") or 0) >= ADULT_AGE,
                 url=f"{base}/book/{b['id']}" if base else "",
                 cover=f"komga:{b['id']}",
                 added=str(b.get("created") or "")[:10], library=libs.get(b.get("libraryId")) or "Komga",
@@ -127,6 +129,7 @@ def _read_db(cfg, s):
             year=year_of(a["RELEASE_DATE"]) if a else None,
             description=(r["SUMMARY"] or (a["SUMMARY"] if a else "") or "").strip(),
             genres=genres.get(r["ID"], []),
+            adult=(r["AGE_RATING"] or 0) >= ADULT_AGE,
             url=f"{base}/series/{r['ID']}" if base else "",
             cover="",                              # thumbnails need the API (add an API key)
             added=str(r["CREATED_DATE"] or "")[:10], library=r["LIB"] or "Komga",

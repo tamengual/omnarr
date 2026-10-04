@@ -11,12 +11,17 @@ def _strip_html(s):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
+ADULT_TAGS = ("NSFW", "XXX", "18+")     # behind the private-section PIN
+
+
 def read(cfg):
     s = cfg.source("calibre")
     if not s:
         return []
     con = ro_connect(s["db"])
     hide = {t.lower() for t in (s.get("hide_tags") or [])}
+    adult_tags = s.get("adult_tags")              # unset: the usual NSFW tags; [] turns this off
+    adult = {t.lower() for t in (ADULT_TAGS if adult_tags is None else adult_tags)}
     read_col = s.get("date_read_column")          # e.g. 1 -> custom_column_1 (Goodreads "Date Read")
     base = cfg.link("cwa")                        # Calibre-Web(-Automated) book page: /book/<id>
     tmpl = "{base}/book/{id}"
@@ -59,6 +64,7 @@ def read(cfg):
             added=(b["timestamp"] or "")[:10],
             finished=bid in done,
             hidden=any(t.lower() in hide for t in btags),
+            adult=any(t.lower() in adult for t in btags),
             library="Calibre",
             ids={k: v for k, v in ids.get(bid, {}).items() if k in ("isbn", "asin", "mobi-asin", "google", "goodreads")},
             match={"epub_names": [f"{n}.epub" for f, n, _ in formats if f == "EPUB"]},

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3 — 2026-10-04
+
+- **Adult comics and books go in the private section.** Komga books whose series is rated
+  18+ (ComicInfo "Adults Only 18+") and Calibre books tagged NSFW, XXX or 18+ now only show
+  in the PIN-locked private section. The Calibre tags can be changed (or turned off) in the
+  Calibre connection.
+- Notifications can never interrupt the request or upload that triggered them.
+
 ## 0.3.2 — 2026-10-04
 
 - **Request approvals.** A new *can ask* permission sits between guest and family. Those

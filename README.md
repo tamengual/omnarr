@@ -43,7 +43,8 @@ Omnarr is the front end.
   Invite them with a link you text or email. Everyone's progress is their own.
 - **Save and upload.** Download the original ebook, read-along, audiobook, comic, movie or
   game. People you allow can upload their own books and audiobooks to drop-off folders you choose.
-- **An optional private section** (Stash, adult Jellyfin libraries), off by default and PIN-locked, with a PIN per person.
+- **An optional private section** (Stash, adult Jellyfin libraries, 18+ Komga series, Calibre
+  books tagged NSFW), off by default and PIN-locked, with a PIN per person.
 - **Read-only by design.** Omnarr never writes to another app's files. Changes go through
   each app's own API, and every change is logged on the Activity page. The only exception
   is the upload folders, and only if you set them.
