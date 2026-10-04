@@ -88,6 +88,19 @@ If the apps share a Docker network, that's `http://sonarr:8989`; otherwise it's
 reverse proxy), put it in the optional *Open-in-browser address* field so the "Open in…"
 links work.
 
+### Behind a reverse proxy at a sub-path
+
+To serve Omnarr at something like `https://example.com/omnarr/`, set `OMNARR_BASE_PATH=/omnarr`
+and have the proxy strip that prefix before forwarding. The UI uses relative links, so
+nothing else needs changing.
+
+## Install (Home Assistant add-on)
+
+On Home Assistant OS or Supervised, add the add-on repository
+`https://github.com/tamengual/omnarr-ha` under **Settings → Add-ons → Add-on store → ⋮ →
+Repositories**, then install **Omnarr**. It opens from the sidebar, and you're signed in
+through Home Assistant. See the [add-on docs](https://github.com/tamengual/omnarr-ha/blob/main/omnarr/DOCS.md).
+
 ### Security notes
 
 - Put Omnarr behind your reverse proxy or VPN. Don't expose it to the internet directly.

@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.2.0 — 2026-10-03
+
+- **Home Assistant add-on** ([omnarr-ha](https://github.com/tamengual/omnarr-ha)). Omnarr opens
+  from the sidebar, and you're signed in through Home Assistant. That sign-in is trusted only
+  for requests from HA's ingress proxy, and only when running as the add-on.
+- **Works under any URL path.** The UI uses relative links. For reverse proxies, set `OMNARR_BASE_PATH`.
+- **Settings → Password** sets or changes the sign-in password, and changing it signs out other browsers.
+  In the add-on, the direct-access password can only be set from inside Home Assistant.
+- **Komga:** each book is now its own entry (grouped by series) with its own cover, instead of one entry per series.
+- **Cleaner titles.** Nested series names in brackets are stripped, e.g. "The Sworn Sword (A Game of Thrones) (The Hedge Knight…)".
+- **No stale pages after upgrades.** Browsers now re-check the UI files on each load.
+
+## 0.1.0 — 2026-10-03
 
 The first public release.
 

@@ -67,15 +67,15 @@ def video_info(cfg, item_id, user_id):
     ms = (info.get("MediaSources") or [{}])[0]
     psid = info.get("PlaySessionId") or psid
     if ms.get("TranscodingUrl"):
-        url, mode = "/api/stream/jf" + _strip_key(ms["TranscodingUrl"]), "hls"
+        url, mode = "api/stream/jf" + _strip_key(ms["TranscodingUrl"]), "hls"
     else:
-        url = f"/api/stream/jf/Videos/{item_id}/stream?static=true&mediaSourceId={ms.get('Id')}&playSessionId={psid}"
+        url = f"api/stream/jf/Videos/{item_id}/stream?static=true&mediaSourceId={ms.get('Id')}&playSessionId={psid}"
         mode = "direct"
     subs = []
     for s in ms.get("MediaStreams") or []:
         if s.get("Type") == "Subtitle" and s.get("DeliveryUrl") and s.get("DeliveryMethod") == "External":
             subs.append({"index": s["Index"], "label": s.get("DisplayTitle") or s.get("Language") or "Subtitles",
-                         "lang": s.get("Language") or "", "url": "/api/stream/jf" + _strip_key(s["DeliveryUrl"]),
+                         "lang": s.get("Language") or "", "url": "api/stream/jf" + _strip_key(s["DeliveryUrl"]),
                          "default": s["Index"] == ms.get("DefaultSubtitleStreamIndex")})
     ud = item.get("UserData") or {}
     title = item.get("Name") or ""
@@ -84,7 +84,7 @@ def video_info(cfg, item_id, user_id):
     return {"type": "video", "mode": mode, "url": url, "play_session_id": psid, "item_id": item_id,
             "title": title, "duration": (item.get("RunTimeTicks") or 0) / 1e7,
             "resume": (ud.get("PlaybackPositionTicks") or 0) / 1e7, "subtitles": subs,
-            "poster": f"/api/cover/jellyfin:{item.get('SeriesId') or item_id}"}
+            "poster": f"api/cover/jellyfin:{item.get('SeriesId') or item_id}"}
 
 
 def video_progress(cfg, user_id, item_id, position, duration, finished):
@@ -101,16 +101,18 @@ def video_stop(cfg, play_session_id):
         c.delete("/Videos/ActiveEncodings", params={"deviceId": DEVICE_ID, "playSessionId": play_session_id})
 
 
-def rewrite_playlist(text):
-    """Remove api_key from every line; make root-relative URLs go through our proxy."""
+def rewrite_playlist(text, base=""):
+    """Remove api_key from every line; make root-relative URLs go through our proxy.
+    `base` is the path Omnarr is served under ("" at the site root, HA ingress path, ...)."""
+    proxy = base.rstrip("/") + "/api/stream/jf"
     out = []
     for line in text.splitlines():
         if line and not line.startswith("#"):
             line = _strip_key(line)
             if line.startswith("/"):
-                line = "/api/stream/jf" + line
+                line = proxy + line
         elif "URI=" in line:
-            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + (("/api/stream/jf" + _strip_key(m.group(1))) if m.group(1).startswith("/") else _strip_key(m.group(1))) + '"', line)
+            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + ((proxy + _strip_key(m.group(1))) if m.group(1).startswith("/") else _strip_key(m.group(1))) + '"', line)
         out.append(line)
     return "\n".join(out) + "\n"
 
@@ -150,14 +152,14 @@ def _audio_info_api(cfg, s, item_id):
         if f.get("exclude") or f.get("invalid"):
             continue
         d = f.get("duration") or 0
-        tracks.append({"url": f"/api/stream/abs/{item_id}/{f['ino']}", "duration": d, "offset": offset,
+        tracks.append({"url": f"api/stream/abs/{item_id}/{f['ino']}", "duration": d, "offset": offset,
                        "mime": f.get("mimeType") or "audio/mp4"})
         offset += d
     chapters = [{"title": c.get("title"), "start": c.get("start"), "end": c.get("end")} for c in m.get("chapters") or []]
     return {"type": "audio", "item_id": item_id, "title": (m.get("metadata") or {}).get("title") or "",
             "duration": m.get("duration") or offset, "tracks": tracks, "chapters": chapters,
             "resume": (p.get("currentTime") if p and not p.get("isFinished") else 0) or 0,
-            "cover": f"/api/cover/abs:{item_id}" if m.get("coverPath") else ""}
+            "cover": f"api/cover/abs:{item_id}" if m.get("coverPath") else ""}
 
 
 def audio_info(cfg, item_id):
@@ -180,13 +182,13 @@ def audio_info(cfg, item_id):
         if f.get("exclude") or f.get("invalid"):
             continue
         d = f.get("duration") or 0
-        tracks.append({"url": f"/api/stream/abs/{item_id}/{f['ino']}", "duration": d, "offset": offset,
+        tracks.append({"url": f"api/stream/abs/{item_id}/{f['ino']}", "duration": d, "offset": offset,
                        "mime": f.get("mimeType") or "audio/mp4"})
         offset += d
     chapters = [{"title": c.get("title"), "start": c.get("start"), "end": c.get("end")} for c in json.loads(r["chapters"] or "[]")]
     return {"type": "audio", "item_id": item_id, "title": r["title"], "duration": r["duration"] or offset,
             "tracks": tracks, "chapters": chapters, "resume": (p["currentTime"] if p and not p["isFinished"] else 0) or 0,
-            "cover": f"/api/cover/abs:{item_id}" if r["coverPath"] else ""}
+            "cover": f"api/cover/abs:{item_id}" if r["coverPath"] else ""}
 
 
 def audio_progress(cfg, item_id, position, duration, finished):

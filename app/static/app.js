@@ -151,7 +151,7 @@ function enterPrivate() {
 
 // PIN failures belong to this dialog, never to the main login screen.
 async function adultApi(action, pin) {
-  const response = await fetch(`/api/adult/${action}`, {
+  const response = await fetch(`api/adult/${action}`, {
     method: action === "status" ? "GET" : "POST", credentials: "same-origin", cache: "no-store",
     signal: AbortSignal.timeout(10000),
     headers: { "Content-Type": "application/json" },
@@ -287,12 +287,55 @@ async function api(path, options = {}) {
   return body;
 }
 
+function setupPasswordSection(status) {
+  const viaHA = Boolean(status.ha_ingress);
+  const hasPassword = Boolean(status.has_password);
+  // Inside Home Assistant you're already signed in, so the current password is never asked for.
+  $("#settings-password-current-field").hidden = viaHA || !hasPassword;
+  $("#settings-password-help").textContent = viaHA
+    ? (hasPassword ? "Used only if you open Omnarr's own port directly instead of through Home Assistant."
+                   : "Only needed if you open Omnarr's own port directly (add-on Network settings). Until you set one, direct sign-in stays closed.")
+    : "The password for signing in to Omnarr.";
+  const form = $("#settings-password-form");
+  if (form.dataset.bound) return;
+  form.dataset.bound = "1";
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = $("#settings-password-message");
+    const next = $("#settings-password-new").value;
+    if (next !== $("#settings-password-repeat").value) {
+      message.textContent = "The two new passwords don't match.";
+      message.className = "connection-message is-error";
+      return;
+    }
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    message.textContent = "Saving…";
+    message.className = "connection-message is-busy";
+    try {
+      await api("api/auth/password", { method: "POST", body: JSON.stringify({ current: $("#settings-password-current").value, new: next }) });
+      form.reset();
+      $("#settings-password-current-field").hidden = viaHA;
+      message.textContent = "Password saved.";
+      message.className = "connection-message is-success";
+    } catch (error) {
+      if (error.message === "login") return;
+      message.textContent = error.message;
+      message.className = "connection-message is-error";
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 async function boot() {
   try {
-    const status = await (await fetch("/api/auth/status", { credentials: "same-origin" })).json();
+    const status = await (await fetch("api/auth/status", { credentials: "same-origin" })).json();
     if (!status.logged_in) return showAuth(status.setup_needed);
     $("#auth").hidden = true;
     $("#app").hidden = false;
+    $("#logout").hidden = Boolean(status.ha_ingress);          // signed in through Home Assistant
+    setupPasswordSection(status);
     applyAdultOption(Boolean(status.adult_enabled));
     settingsWelcome = Boolean(status.connections_needed);
     if (settingsWelcome) params = new URLSearchParams({ view: "settings" });
@@ -346,7 +389,7 @@ $("#auth-form").addEventListener("submit", async (event) => {
   }
   $("#auth-btn").disabled = true;
   try {
-    await api(setupMode ? "/api/auth/setup" : "/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    await api(setupMode ? "api/auth/setup" : "api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
     $("#auth-pw").value = "";
     $("#auth-pw2").value = "";
     await boot();
@@ -429,11 +472,11 @@ for (const key of BOOL_PARAMS) $(`#${key}`).addEventListener("change", (event) =
 $("#clear").addEventListener("click", clearAll);
 $("#home").addEventListener("click", (event) => { event.preventDefault(); if (privateMode) leavePrivate(); else clearAll(); });
 $("#more").addEventListener("click", () => { offset += PAGE; runResults(true); });
-$("#logout").addEventListener("click", async () => { window.OmnarrPlayer?.closeAll(); await api("/api/auth/logout", { method: "POST" }); location.reload(); });
+$("#logout").addEventListener("click", async () => { window.OmnarrPlayer?.closeAll(); await api("api/auth/logout", { method: "POST" }); location.reload(); });
 $("#reindex").addEventListener("click", async () => {
   $("#reindex").disabled = true;
   try {
-    await api("/api/reindex", { method: "POST" });
+    await api("api/reindex", { method: "POST" });
     $("#index-status").textContent = "Refreshing your library…";
     setTimeout(refreshStatus, 3000);
   } finally { $("#reindex").disabled = false; }
@@ -600,7 +643,7 @@ function card(work, options = {}) {
   return `<button class="card${work.kind === "game" ? " game-card" : ""}${options.mini ? " mini-card" : ""}${options.current ? " current-work" : ""}" type="button" data-id="${esc(work.id)}"${options.current ? ' aria-current="true"' : ""} aria-label="Open ${esc(work.title)}">
     <span class="cover-shell">
       <span class="cover-placeholder"><span class="placeholder-title">${esc(work.title)}</span><span class="placeholder-author">${esc(author)}</span></span>
-      ${work.cover ? `<img class="cover-image" loading="lazy" src="/api/cover/${encodeURIComponent(work.cover)}" alt="">` : ""}
+      ${work.cover ? `<img class="cover-image" loading="lazy" src="api/cover/${encodeURIComponent(work.cover)}" alt="">` : ""}
       <span class="cover-shade" aria-hidden="true"></span>
       <span class="format-stack">${formats.map((format) => `<span class="format-badge f-${esc(format)}">${esc(BADGE[format] || format)}</span>`).join("")}${moreFormats ? `<span class="format-badge more-badge">+${moreFormats}</span>` : ""}</span>
       ${work.status === "finished" ? '<span class="finished-mark" aria-label="Finished"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 10 3 3 7-7"/></svg></span>' : ""}
@@ -641,7 +684,7 @@ async function runHome() {
       const query = scopedQuery(row.params);
       query.set("limit", "18");
       query.set("offset", "0");
-      return api(`/api/search?${query}`);
+      return api(`api/search?${query}`);
     }));
     if (sequence !== runSequence) return;
     renderFacets(results[1]?.facets || results[0]?.facets || {});
@@ -688,7 +731,7 @@ async function runResults(append = false) {
   query.set("limit", String(PAGE));
   query.set("offset", String(offset));
   try {
-    const result = await api(`/api/search?${query}`, { privateRequest: wasPrivate, cache: "no-store" });
+    const result = await api(`api/search?${query}`, { privateRequest: wasPrivate, cache: "no-store" });
     if (sequence !== runSequence) return;
     if (wasPrivate) {
       if (!privateUnlocked()) { leavePrivate("Private collection locked."); return; }
@@ -826,7 +869,7 @@ async function loadConnections(message = "", focusKey) {
   $("#settings-retry").hidden = true;
   connectionMessage($("#settings-status"), message || "Loading connections…", "busy");
   try {
-    const data = await api("/api/setup/apps", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]), cache: "no-store" });
+    const data = await api("api/setup/apps", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]), cache: "no-store" });
     if (controller !== settingsController) return;
     settingsApps = data.apps || [];
     // The contract returns masked secrets. Discard any unexpected plaintext.
@@ -955,7 +998,7 @@ function editConnection(app, index, card) {
     form.setAttribute("aria-busy", "true");
     connectionMessage(message, action === "test" ? "Testing connection… This can take up to 20 seconds." : action === "disconnect" ? "Disconnecting…" : "Saving connection… This can take up to 20 seconds.", "busy");
     try {
-      const path = `/api/setup/apps/${encodeURIComponent(app.key)}${action === "test" ? "/test" : ""}`;
+      const path = `api/setup/apps/${encodeURIComponent(app.key)}${action === "test" ? "/test" : ""}`;
       const result = await api(path, {
         method: action === "disconnect" ? "DELETE" : "POST",
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
@@ -1000,7 +1043,7 @@ $("#settings-adult").addEventListener("change", async (event) => {
   settingsPending(true);
   connectionMessage($("#settings-option-message"), "Saving preference…", "busy");
   try {
-    const result = await api("/api/setup/options", { method: "POST", body: JSON.stringify({ adult_enabled: enabled }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
+    const result = await api("api/setup/options", { method: "POST", body: JSON.stringify({ adult_enabled: enabled }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
     if (controller !== settingsController) return;
     if (!result.ok) throw new Error("Preference not saved");
     applyAdultOption(Boolean(result.options.adult_enabled));
@@ -1031,7 +1074,7 @@ let gamePlatformsPromise;
 let gamePickerSequence = 0;
 function gamePlatforms() {
   // Share even an in-flight fetch across the footer and all adaptation cards.
-  return gamePlatformsPromise ||= api("/api/request/game/platforms");
+  return gamePlatformsPromise ||= api("api/request/game/platforms");
 }
 
 function hintedGamePlatform(title, platforms) {
@@ -1108,7 +1151,7 @@ function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
     message.textContent = "Submitting request…";
     if (hadFocus) message.focus();
     try {
-      await api("/api/request/game", { method: "POST", body: JSON.stringify({ game, platform: platform.slug }) });
+      await api("api/request/game", { method: "POST", body: JSON.stringify({ game, platform: platform.slug }) });
       requested = true;
       if (!root.isConnected) return;
       submit.textContent = "Requested";
@@ -1193,7 +1236,7 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
       button.textContent = "Requesting…";
       message.textContent = "";
       try {
-        await api("/api/request/screen", { method: "POST", body: JSON.stringify({ kind: item.kind, tmdb: item.tmdb }) });
+        await api("api/request/screen", { method: "POST", body: JSON.stringify({ kind: item.kind, tmdb: item.tmdb }) });
         item.status = "requested";
         button.textContent = "Requested";
         button.className = "request-pill";
@@ -1242,7 +1285,7 @@ function renderRequestSearch() {
     button.disabled = true;
     message.textContent = "Searching movies & TV…";
     try {
-      const data = await api(`/api/request/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal });
+      const data = await api(`api/request/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal });
       if (controller.signal.aborted || !section.isConnected) return;
       const results = data.results || [];
       renderRequestCards($(".request-grid", section), results, true, true);
@@ -1342,7 +1385,7 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
     options.replaceChildren();
     progress.textContent = "Finding matching books…";
     try {
-      const data = await api(`/api/request/book/candidates?${new URLSearchParams({ work: workId, format })}`, { signal: controller.signal });
+      const data = await api(`api/request/book/candidates?${new URLSearchParams({ work: workId, format })}`, { signal: controller.signal });
       if (!active() || current !== step) return;
       candidates = data.candidates || [];
       query = data.query || "";
@@ -1361,7 +1404,7 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
     options.replaceChildren();
     progress.textContent = "Searching sources…";
     try {
-      const data = await api(`/api/request/book/releases?${new URLSearchParams({ provider: candidate.provider, book_id: candidate.book_id, format })}`, { signal: controller.signal });
+      const data = await api(`api/request/book/releases?${new URLSearchParams({ provider: candidate.provider, book_id: candidate.book_id, format })}`, { signal: controller.signal });
       if (!active() || current !== step) return;
       const releases = data.releases || [];
       if (!releases.length) {
@@ -1383,7 +1426,7 @@ function openBookPicker(root, workId, format, opener, detailSignal, keepLooking,
         progress.textContent = "Submitting request…";
         try {
           // Keep the opaque Shelfmark release intact, including all provider fields.
-          await api("/api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], work: workId, provider: candidate.provider, book_id: candidate.book_id }) });
+          await api("api/request/book/download", { method: "POST", body: JSON.stringify({ release: releases[index], work: workId, provider: candidate.provider, book_id: candidate.book_id }) });
           if (!active() || current !== step) return;
           onDownloaded();
         } catch (error) {
@@ -1419,7 +1462,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
   async function loadWanted() {
     let items;
     try {
-      items = (await api("/api/wanted", { signal, cache: "no-store" })).items || [];
+      items = (await api("api/wanted", { signal, cache: "no-store" })).items || [];
     } catch (error) {
       if (signal.aborted || !root.isConnected) return;
       $$("[data-book-options]", content).forEach((options) => {
@@ -1456,7 +1499,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
         buttons.forEach(([button]) => { button.disabled = true; });
         status.textContent = "Adding to books we’re looking for…";
         try {
-          await api("/api/wanted", { method: "POST", body: JSON.stringify({ work: workId, format }) });
+          await api("api/wanted", { method: "POST", body: JSON.stringify({ work: workId, format }) });
           if (signal.aborted || !root.isConnected) return;
           showStatus({ format, status: "searching", note: "Omnarr is looking for a good copy." }, true);
         } catch (error) {
@@ -1647,7 +1690,7 @@ async function loadLive(root, id, signal, force = false) {
   content.setAttribute("aria-busy", "true");
   try {
     const cached = liveCache.get(String(id));
-    const data = !force && cached && Date.now() - cached.time < 30000 ? cached.data : await api(`/api/work/${encodeURIComponent(id)}/live`, { signal, cache: "no-store" });
+    const data = !force && cached && Date.now() - cached.time < 30000 ? cached.data : await api(`api/work/${encodeURIComponent(id)}/live`, { signal, cache: "no-store" });
     if (!current()) return;
     liveCache.set(String(id), { data, time: Date.now() });
     if (liveCache.size > 100) liveCache.delete(liveCache.keys().next().value);
@@ -1685,7 +1728,7 @@ async function performLiveAction(root, id, signal, button) {
   const buttons = $$("[data-live-action], [data-live-retry]", root);
   buttons.forEach((node) => { node.disabled = true; });
   try {
-    const result = await api("/api/action", { method: "POST", body: JSON.stringify(payload) });
+    const result = await api("api/action", { method: "POST", body: JSON.stringify(payload) });
     if (!result.ok) throw new Error(result.detail || "The action could not be completed.");
     if (root.isConnected && !signal.aborted) message.textContent = harder ? searchHarderResult(result.result) : search ? "Searching… check Activity" : "Monitoring updated.";
   } catch (error) {
@@ -1712,11 +1755,11 @@ async function openWork(id) {
   $("#detail-body").innerHTML = `<div class="detail-loading">${skeletons(3)}</div>`;
   if (!detail.open) detail.showModal();
   try {
-    const work = await api(`/api/work/${encodeURIComponent(id)}`, { signal, privateRequest: wasPrivate, cache: "no-store" });
+    const work = await api(`api/work/${encodeURIComponent(id)}`, { signal, privateRequest: wasPrivate, cache: "no-store" });
     if (signal.aborted || !detail.open || epoch !== viewEpoch) return;
     if (wasPrivate && !privateUnlocked()) { leavePrivate("Private collection locked."); return; }
     if (!work || !allowedWork(work)) throw new Error("This work is not available in this section.");
-    const requests = wasPrivate ? null : api(`/api/work/${encodeURIComponent(id)}/requests`, { signal }).then((data) => ({ data }), (error) => ({ error }));
+    const requests = wasPrivate ? null : api(`api/work/${encodeURIComponent(id)}/requests`, { signal }).then((data) => ({ data }), (error) => ({ error }));
     const meta = [
       work.authors?.length ? `${work.kind === "scene" ? "Performers: " : work.kind === "game" ? "Companies: " : ""}${work.authors.join(", ")}` : "",
       ["game", "scene"].includes(work.kind) && work.libraries?.length ? `${work.kind === "game" ? "Platform" : "Studio"}: ${work.libraries.join(", ")}` : "",
@@ -1748,7 +1791,7 @@ async function openWork(id) {
     $("#detail-body").innerHTML = `<button class="dialog-close icon-button" type="button" aria-label="Close details"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       <article class="detail-view${work.kind === "game" ? " game-detail" : ""}">
         <div class="detail-lead">
-          <div class="detail-cover"><span class="cover-placeholder"><span class="placeholder-title">${esc(work.title)}</span><span class="placeholder-author">${esc(work.authors?.[0] || work.kind)}</span></span>${work.cover ? `<img class="cover-image" src="/api/cover/${encodeURIComponent(work.cover)}" alt="Cover of ${esc(work.title)}">` : ""}</div>
+          <div class="detail-cover"><span class="cover-placeholder"><span class="placeholder-title">${esc(work.title)}</span><span class="placeholder-author">${esc(work.authors?.[0] || work.kind)}</span></span>${work.cover ? `<img class="cover-image" src="api/cover/${encodeURIComponent(work.cover)}" alt="Cover of ${esc(work.title)}">` : ""}</div>
           <div class="detail-intro"><div class="eyebrow">${esc(work.kind || "Work")}${work.universe ? ` · ${esc(work.universe)}` : ""}</div><h2>${esc(work.title)}</h2><div class="detail-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join("")}</div>${narrators}<div class="detail-tags">${genres}${tags}</div><div class="detail-playback">${wasPrivate ? "" : playbackActions(work)}</div><p class="live-header hint" data-live-header role="status"></p></div>
         </div>
         <div class="detail-content">
@@ -1771,7 +1814,7 @@ async function openWork(id) {
     $$("[data-split]", $("#detail-body")).forEach((button) => button.addEventListener("click", async () => {
       if (!confirm("Show this edition as a separate item? It won’t be automatically matched again.")) return;
       button.disabled = true;
-      await api("/api/override", { method: "POST", body: JSON.stringify({ a: button.dataset.split, action: "split" }) });
+      await api("api/override", { method: "POST", body: JSON.stringify({ a: button.dataset.split, action: "split" }) });
       button.textContent = "Separated — refreshing…";
       setTimeout(() => { detail.close(); run(); }, 2200);
     }));
@@ -1793,7 +1836,7 @@ $("#detail").addEventListener("close", () => { if (!$("#detail").open) detailCon
 
 async function refreshStatus() {
   try {
-    const status = await api("/api/status");
+    const status = await api("api/status");
     const index = status.index;
     if (!index) $("#index-status").textContent = "Building the library…";
     else {
@@ -1951,7 +1994,7 @@ function bindWantedActivity(root, items) {
     $$("button", row).forEach((control) => { control.disabled = true; });
     $("[role=status]", row).textContent = wantedMessages.get(id);
     try {
-      await api(`/api/wanted/${encodeURIComponent(id)}${stop ? "" : "/search"}`, { method: stop ? "DELETE" : "POST" });
+      await api(`api/wanted/${encodeURIComponent(id)}${stop ? "" : "/search"}`, { method: stop ? "DELETE" : "POST" });
       wantedMessages.set(id, stop ? "Stopped looking." : "Search requested. Omnarr is looking again.");
       if (epoch !== viewEpoch || !activityVisible()) return;
       if (stop && activityData) {
@@ -2006,7 +2049,7 @@ async function refreshActivity(render = true) {
   button.disabled = true;
   const timeout = setTimeout(() => controller.abort(), 45000);
   try {
-    const data = await api("/api/activity", { signal: controller.signal, cache: "no-store" });
+    const data = await api("api/activity", { signal: controller.signal, cache: "no-store" });
     if (controller.signal.aborted) return;
     activityData = data;
     activityUpdated = Date.now();

@@ -138,6 +138,17 @@
             <p id="settings-private-help" class="hint">Show Private and its app connections. The collection stays PIN-locked; turning this off hides it without forgetting your connections.</p>
             <p id="settings-option-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
+          <section class="settings-options" aria-labelledby="settings-password-title">
+            <h2 id="settings-password-title" class="check">Password</h2>
+            <p id="settings-password-help" class="hint">The password for signing in to Omnarr directly.</p>
+            <form id="settings-password-form" class="password-form">
+              <label class="field" id="settings-password-current-field">Current password<input id="settings-password-current" type="password" autocomplete="current-password"></label>
+              <label class="field">New password (8+ characters)<input id="settings-password-new" type="password" autocomplete="new-password" minlength="8" required></label>
+              <label class="field">Repeat new password<input id="settings-password-repeat" type="password" autocomplete="new-password" minlength="8" required></label>
+              <div class="connection-actions"><button class="primary-button" type="submit">Save password</button></div>
+            </form>
+            <p id="settings-password-message" class="connection-message" role="status" aria-live="polite"></p>
+          </section>
           <h2>Connections</h2>
           <p id="settings-status" class="connection-message" role="status" aria-live="polite"></p>
           <button id="settings-retry" class="secondary-button" type="button" hidden>Try again</button>

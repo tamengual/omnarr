@@ -337,6 +337,10 @@ button:disabled { cursor: wait; opacity: .55; }
 .settings-options { margin-top: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .settings-options .check { font-weight: 700; }
 .settings-options .hint { margin-bottom: 0; max-width: 680px; }
+.settings-options + .settings-options { margin-top: 12px; }
+.settings-options h2 { margin: 0 0 4px; font-size: 1rem; }
+.password-form { display: grid; gap: 10px; max-width: 420px; margin-top: 12px; }
+.password-form input { width: 100%; min-height: 44px; }
 .connection-groups { display: grid; gap: 24px; margin-top: 20px; }
 .connection-group { min-width: 0; }
 .connection-group h3 { margin: 0 0 12px; color: var(--muted); font-size: 13px; }

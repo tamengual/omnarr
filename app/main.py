@@ -28,6 +28,13 @@ STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 SESSION_DAYS = 90
 COOKIE = "omnarr_session"
+# Served under a path prefix? Reverse proxies: set OMNARR_BASE_PATH (e.g. /omnarr) and strip it
+# before forwarding. Home Assistant add-on: OMNARR_HA_INGRESS=1 — the prefix comes from the
+# X-Ingress-Path header, and HA's own login is trusted, but ONLY for requests from HA's ingress proxy.
+BASE_PATH = os.environ.get("OMNARR_BASE_PATH", "").rstrip("/")
+HA_INGRESS = os.environ.get("OMNARR_HA_INGRESS") == "1"
+NO_PW_HA = "No password is set for direct sign-in yet. Open Omnarr from Home Assistant and set one in Settings → Password."
+INGRESS_PROXY = os.environ.get("OMNARR_INGRESS_PROXY", "172.30.32.2")
 
 app = FastAPI(title="Omnarr", docs_url=None, redoc_url=None)
 _index_lock = threading.Lock()
@@ -49,9 +56,33 @@ def _hash(pw, salt):
     return hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=2 ** 14, r=8, p=1).hex()
 
 
+def _ingress_path(request):
+    """HA ingress prefix when the request really came through HA's ingress proxy, else None."""
+    if HA_INGRESS and request.client and request.client.host == INGRESS_PROXY:
+        return request.headers.get("x-ingress-path") or None
+    return None
+
+
+def _base_path(request):
+    return (_ingress_path(request) or BASE_PATH).rstrip("/")
+
+
 def _session(request):
+    if _ingress_path(request):
+        # HA has already authenticated this user; one Omnarr session per HA user.
+        tok = "ha:" + (request.headers.get("x-remote-user-id") or "user")
+        con = state()
+        try:
+            r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
+            if not r:
+                with con:
+                    con.execute("INSERT INTO sessions VALUES (?,?,?,0)", (tok, time.time(), 4102444800))
+                r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
+            return dict(r)
+        finally:
+            con.close()
     tok = request.cookies.get(COOKIE)
-    if not tok:
+    if not tok or tok.startswith("ha:"):
         return None
     con = state()
     try:
@@ -63,6 +94,16 @@ def _session(request):
 
 def _adult_ok(sess):
     return _adult_enabled() and bool(sess and (sess.get("adult_until") or 0) > time.time())
+
+
+@app.middleware("http")
+async def revalidate_ui(request: Request, call_next):
+    """The UI (html/js/css) must be re-checked on every load, or browsers keep running an old
+    version after an upgrade. Unchanged files still come back as a cheap 304."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.middleware("http")
@@ -83,9 +124,12 @@ def auth_status(request: Request):
     finally:
         con.close()
     sess = _session(request)
-    return {"setup_needed": not has_pw, "logged_in": bool(sess), "adult_unlocked": _adult_ok(sess),
+    # In the HA add-on, a direct visitor must never get to choose the first password.
+    return {"setup_needed": not has_pw and not HA_INGRESS, "has_password": has_pw,
+            "logged_in": bool(sess), "adult_unlocked": _adult_ok(sess),
             "adult_enabled": _adult_enabled(),
-            "connections_needed": bool(sess) and not cfg.connections()}
+            "connections_needed": bool(sess) and not cfg.connections(),
+            "ha_ingress": bool(_ingress_path(request))}
 
 
 def _adult_enabled():
@@ -98,18 +142,21 @@ def _adult_enabled():
     return (v == "1") if v is not None else bool(cfg.get("adult.enabled", False))
 
 
-def _new_session(response):
+def _new_session(request, response):
     tok = secrets.token_urlsafe(32)
     con = state()
     with con:
         con.execute("INSERT INTO sessions VALUES (?,?,?,0)", (tok, time.time(), time.time() + SESSION_DAYS * 86400))
         con.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
     con.close()
-    response.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax")
+    response.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                        path=_base_path(request) + "/")
 
 
 @app.post("/api/auth/setup")
 async def auth_setup(request: Request, response: Response):
+    if HA_INGRESS:
+        raise HTTPException(403, NO_PW_HA)
     body = await request.json()
     pw = body.get("password") or ""
     if len(pw) < 8:
@@ -124,7 +171,7 @@ async def auth_setup(request: Request, response: Response):
             con.execute("INSERT INTO settings VALUES ('password_hash', ?)", (_hash(pw, salt),))
     finally:
         con.close()
-    _new_session(response)
+    _new_session(request, response)
     return {"ok": True}
 
 
@@ -143,10 +190,39 @@ async def auth_login(request: Request, response: Response):
         salt, want = _setting(con, "password_salt"), _setting(con, "password_hash")
     finally:
         con.close()
+    if not want and HA_INGRESS:
+        raise HTTPException(403, NO_PW_HA)
     if not want or not hmac.compare_digest(_hash(body.get("password") or "", salt), want):
         _fails[ip] = recent + [time.time()]
         raise HTTPException(401, "Wrong password")
-    _new_session(response)
+    _new_session(request, response)
+    return {"ok": True}
+
+
+@app.post("/api/auth/password")
+async def auth_password(request: Request):
+    """Set or change the password. Needs a signed-in session; the current password is required
+    too, except when coming through Home Assistant (already authenticated by HA)."""
+    sess = _session(request)
+    if not sess:
+        raise HTTPException(403, "Sign in first")
+    body = await request.json()
+    new = body.get("new") or ""
+    if len(new) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    con = state()
+    try:
+        salt, want = _setting(con, "password_salt"), _setting(con, "password_hash")
+        if want and not _ingress_path(request) and not hmac.compare_digest(_hash(body.get("current") or "", salt), want):
+            raise HTTPException(403, "Current password is wrong")
+        salt = secrets.token_hex(16)
+        with con:
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('password_salt', ?)", (salt,))
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('password_hash', ?)", (_hash(new, salt),))
+            # sign out every other browser that used the old password (HA sessions are unaffected)
+            con.execute("DELETE FROM sessions WHERE token NOT LIKE 'ha:%' AND token <> ?", (sess["token"],))
+    finally:
+        con.close()
     return {"ok": True}
 
 
@@ -154,7 +230,7 @@ async def auth_login(request: Request, response: Response):
 def _set_adult(request, until):
     con = state()
     with con:
-        con.execute("UPDATE sessions SET adult_until=? WHERE token=?", (until, request.cookies.get(COOKIE)))
+        con.execute("UPDATE sessions SET adult_until=? WHERE token=?", (until, (_session(request) or {}).get("token")))
     con.close()
 
 
@@ -226,7 +302,7 @@ def auth_logout(request: Request, response: Response):
         with con:
             con.execute("DELETE FROM sessions WHERE token=?", (tok,))
         con.close()
-    response.delete_cookie(COOKIE)
+    response.delete_cookie(COOKIE, path=_base_path(request) + "/")
     return {"ok": True}
 
 
@@ -520,7 +596,7 @@ async def _proxy(url, request, headers):
     if "mpegurl" in ctype.lower() or url.split("?")[0].lower().endswith(".m3u8"):
         body = await r.aread()
         await r.aclose(); await client.aclose()
-        return Response(play.rewrite_playlist(body.decode("utf-8", "replace")), status_code=r.status_code,
+        return Response(play.rewrite_playlist(body.decode("utf-8", "replace"), _base_path(request)), status_code=r.status_code,
                         media_type=ctype or "application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
 
     async def close():

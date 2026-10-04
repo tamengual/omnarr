@@ -73,7 +73,7 @@ window.OmnarrPlayer = (() => {
   if (detail) new MutationObserver(mountDock).observe(detail, { attributes: true, attributeFilter: ["open"] });
 
   async function getInfo(type, id, signal) {
-    const response = await fetch(`/api/play/${type}/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store", signal });
+    const response = await fetch(`api/play/${type}/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store", signal });
     if (response.status === 401) throw new Error("Your session expired. Sign in again to play this item.");
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "This item could not be loaded. Try again.");
@@ -105,7 +105,7 @@ window.OmnarrPlayer = (() => {
       if (version < (state.lastSent || 0)) return;
       state.lastSent = version;
       try {
-        const response = await fetch("/api/play/progress", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive });
+        const response = await fetch("api/play/progress", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive });
         if (!response.ok) throw new Error(response.status === 401 ? "Session expired. Sign in again to save your place." : "Your place could not be saved. We’ll retry while you listen or watch.");
         const target = $(state.type === "audio" ? "#audio-message" : "#video-message");
         if (target.dataset.sync) message(state, "", true);
@@ -119,7 +119,7 @@ window.OmnarrPlayer = (() => {
 
   function stopSession(data) {
     if (!data?.play_session_id) return;
-    void fetch("/api/play/stop", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ play_session_id: data.play_session_id }), keepalive: true }).catch(() => {});
+    void fetch("api/play/stop", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ play_session_id: data.play_session_id }), keepalive: true }).catch(() => {});
   }
 
   function preferences(media, type) {
@@ -154,7 +154,7 @@ window.OmnarrPlayer = (() => {
     if (window.Hls) return Promise.resolve(window.Hls);
     if (!hlsPromise) hlsPromise = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "/vendor/hls.min.js";
+      script.src = "vendor/hls.min.js";
       script.onload = () => window.Hls ? resolve(window.Hls) : reject(new Error("The video engine could not be loaded."));
       script.onerror = () => { script.remove(); reject(new Error("The video engine could not be loaded. Check your connection and reopen the video.")); };
       document.head.append(script);
