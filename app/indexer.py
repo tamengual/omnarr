@@ -379,7 +379,8 @@ def _assign_universes(cfg, works):
 def run(cfg):
     t0 = time.time()
     units, errors, counts = [], {}, {}
-    for name, fn in CONNECTORS:
+    from . import extend
+    for name, fn in CONNECTORS + [("custom_library", extend.read_custom)] + extend.plugin_readers():
         if not cfg.source(name):
             continue
         try:

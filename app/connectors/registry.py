@@ -63,6 +63,21 @@ def _test_bookbridge(s):
     return ok, msg
 
 
+def _test_readmeabook(s):
+    from . import readmeabook
+    return readmeabook.test(s)
+
+
+def _test_custom_library(s):
+    from .. import extend
+    return extend.test_custom(s)
+
+
+def _test_custom_requests(s):
+    from .. import extend
+    return extend.test_webhook(s)
+
+
 def _test_abs(s):
     if s.get("api_key"):
         h = {"Authorization": f"Bearer {s['api_key']}"}
@@ -223,6 +238,30 @@ APPS = [
                 {"key": "username", "label": "Username", "type": "text", "required": False, "placeholder": "you@gmail.com"},
                 {"key": "password", "label": "Password / app password", "type": "secret", "required": False},
                 {"key": "from_address", "label": "Send as", "type": "text", "required": False, "placeholder": "Omnarr <you@gmail.com>"}]},
+    {"key": "readmeabook", "label": "ReadMeABook (audiobook requests)", "category": "Books", "test": _test_readmeabook,
+     "about": "Send audiobook requests to ReadMeABook instead of Shelfmark: it finds the Audible match, downloads and "
+              "imports it. Use an admin's token, so Omnarr's own approvals are the only gate.",
+     "fields": [URL("ReadMeABook", "http://host:3030"),
+                {"key": "api_key", "label": "API token", "type": "secret", "required": True,
+                 "help": "In ReadMeABook: Profile → API Tokens → create (starts with rmab_)."},
+                {"key": "audiobooks", "label": "Send audiobook requests here (yes/no)", "type": "text", "required": False,
+                 "placeholder": "yes", "help": "\"no\" keeps it connected but leaves audiobook requests with Shelfmark."},
+                BROWSER]},
+    {"key": "custom_library", "label": "Custom library (JSON)", "category": "Your own apps", "test": _test_custom_library,
+     "about": "Add any app Omnarr doesn't support: point it at a URL that returns your items as JSON "
+              "(a script, n8n, or an app's API behind a small adapter). Format: docs/extending.md.",
+     "fields": [{"key": "url", "label": "Items URL", "type": "url", "required": True, "placeholder": "http://host:8080/omnarr-items.json"},
+                {"key": "header_name", "label": "Header name (optional)", "type": "text", "required": False, "placeholder": "Authorization"},
+                {"key": "header_value", "label": "Header value (optional)", "type": "secret", "required": False,
+                 "help": "Sent with every request to that URL, e.g. Bearer <token>."}]},
+    {"key": "custom_requests", "label": "Custom requests (webhook)", "category": "Your own apps", "test": _test_custom_requests,
+     "about": "Send requests for the formats you pick to your own URL as JSON, instead of Seerr, Shelfmark or ROMarr. "
+              "Payload: docs/extending.md.",
+     "fields": [{"key": "url", "label": "Request URL", "type": "secret", "required": True},
+                {"key": "formats", "label": "Formats to send here", "type": "list", "required": True,
+                 "placeholder": "audiobook, comic", "help": "Any of: movie, tv, ebook, audiobook, comic, game"},
+                {"key": "header_name", "label": "Header name (optional)", "type": "text", "required": False},
+                {"key": "header_value", "label": "Header value (optional)", "type": "secret", "required": False}]},
     {"key": "notifications", "label": "Notifications (webhook)", "category": "Other", "test": _test_notify,
      "about": "Sends events (a request is ready, a request needs approval, someone joined, an upload arrived) to one URL: "
               "ntfy, a Discord webhook, a Home Assistant webhook, or anything that accepts JSON. Test sends a real message.",

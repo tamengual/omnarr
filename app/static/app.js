@@ -54,6 +54,7 @@ let inviteToken = new URLSearchParams(location.hash.slice(1)).get("invite") || "
 let inviteReady = false;
 let currentUser = null;
 let permissions = {};
+let manualPick = true;                  // "Choose a copy myself" lists Shelfmark releases: only with Shelfmark
 const isAdmin = () => currentUser?.role === "admin";
 const canRequest = () => isAdmin() || permissions.can_request === true;
 const canSubmitRequest = () => canRequest() || permissions.can_ask === true;
@@ -1944,7 +1945,7 @@ function bindRelatedBookRequest(card, button, item) {
     try {
       const result = await api("api/wanted", { method: "POST", body: JSON.stringify({ ...target, format }) });
       done(`Requested. Omnarr keeps looking for the ${LABEL[format]} until it finds a good copy.`, result);
-      if (result.queued) return;
+      if (result.queued || !manualPick) return;     // picking a copy needs Shelfmark
       const [link, picker] = manualLink(format);
       panel.replaceChildren(link, picker);
       panel.hidden = false;
@@ -2223,7 +2224,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
       if (existing) { showStatus(existing); return; }
       const disabled = data.shelfmark_enabled ? "" : " disabled";
       const description = `wanted-help-${format}${data.shelfmark_enabled ? "" : " shelfmark-hint"}`;
-      options.innerHTML = `<div class="book-request-actions"><button class="primary-button" type="button" data-auto aria-describedby="${description}"${disabled}>${requestLabel("Get it for me")}</button><button class="secondary-button" type="button" data-manual aria-expanded="false" aria-controls="picker-${format}" aria-describedby="${description}"${disabled}>Choose a copy myself</button></div><p class="hint" id="wanted-help-${format}">${canRequest() ? "Omnarr picks a good copy and keeps trying every 3 days until it arrives" : "Your request waits in Activity → Requests until an admin approves it."}</p><div class="request-picker" id="picker-${format}" hidden></div>`;
+      options.innerHTML = `<div class="book-request-actions"><button class="primary-button" type="button" data-auto aria-describedby="${description}"${disabled}>${requestLabel("Get it for me")}</button>${data.manual_pick === false ? "" : `<button class="secondary-button" type="button" data-manual aria-expanded="false" aria-controls="picker-${format}" aria-describedby="${description}"${disabled}>Choose a copy myself</button>`}</div><p class="hint" id="wanted-help-${format}">${canRequest() ? "Omnarr picks a good copy and keeps trying every 3 days until it arrives" : "Your request waits in Activity → Requests until an admin approves it."}</p><div class="request-picker" id="picker-${format}" hidden></div>`;
       let submitting = false;
       const keepLooking = async () => {
         if (submitting || signal.aborted || !root.isConnected) return;
@@ -2246,7 +2247,7 @@ async function loadWorkRequests(root, workId, result, signal, work) {
       };
       $("[data-auto]", options).onclick = keepLooking;
       const manual = $("[data-manual]", options);
-      manual.onclick = () => {
+      if (manual) manual.onclick = () => {
         const picker = $(".request-picker", options);
         if (!picker.hidden) { $("h4", picker).focus(); return; }
         $("[data-auto]", options).disabled = true;
@@ -2525,7 +2526,7 @@ async function openWork(id) {
     if (signal.aborted || !detail.open || epoch !== viewEpoch) return;
     if (wasPrivate && !privateUnlocked()) { leavePrivate("Private collection locked."); return; }
     if (!work || !allowedWork(work)) throw new Error("This work is not available in this section.");
-    const requests = wasPrivate ? null : api(`api/work/${encodeURIComponent(id)}/requests`, { signal }).then((data) => ({ data }), (error) => ({ error }));
+    const requests = wasPrivate ? null : api(`api/work/${encodeURIComponent(id)}/requests`, { signal }).then((data) => { manualPick = data.manual_pick !== false; return { data }; }, (error) => ({ error }));
     const meta = [
       work.authors?.length ? `${work.kind === "scene" ? "Performers: " : work.kind === "game" ? "Companies: " : ""}${work.authors.join(", ")}` : "",
       ["game", "scene"].includes(work.kind) && work.libraries?.length ? `${work.kind === "game" ? "Platform" : "Studio"}: ${work.libraries.join(", ")}` : "",

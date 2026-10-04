@@ -191,8 +191,17 @@ def _shelfmark_state(snapshot, current):
     return None, ""
 
 
+def _route(cfg, fmt):
+    from . import extend
+    route = extend.requester(cfg, fmt)
+    if route[0] == "builtin" and not requests_.shelfmark_enabled(cfg):
+        return None
+    return route
+
+
 def tick(cfg, state_path, index_path):
-    if not requests_.shelfmark_enabled(cfg):
+    from . import extend
+    if not requests_.shelfmark_enabled(cfg) and not extend.any_requester(cfg, FORMATS):
         return
     con = _con(state_path)
     rows = [dict(r) for r in con.execute("SELECT * FROM wanted_books WHERE status<>'done'")]
@@ -206,6 +215,10 @@ def tick(cfg, state_path, index_path):
         try:
             if _in_library(index_path, row):
                 upd = {"status": "done", "done_at": now, "note": "in your library"}
+            elif row["status"] == "downloading" and (row["current"] or "").startswith("rmab:"):
+                upd = _follow_readmeabook(cfg, row, now)
+            elif row["status"] == "downloading" and (row["current"] or "").startswith("sent:"):
+                pass                                   # handed to your own app/plug-in: wait for it to arrive
             elif row["status"] == "downloading" and row["current"]:
                 if snapshot is None:
                     snapshot = requests_.shelfmark_activity(cfg)
@@ -248,7 +261,50 @@ def tick(cfg, state_path, index_path):
             log.info("wanted '%s' (%s): %s", row["title"], row["format"], upd.get("note") or upd.get("status"))
 
 
+def _follow_readmeabook(cfg, row, now):
+    from .connectors import readmeabook
+    state, progress, err = readmeabook.status(cfg.source("readmeabook"), row["current"][5:])
+    if state in readmeabook.FAILED | readmeabook.CANCELLED:
+        tried = json.loads(row["tried"] or "[]") + [row["current"]]
+        why = f"ReadMeABook: {state}" + (f": {err}" if err else "")
+        return {"status": "searching", "tried": json.dumps(tried), "current": None,
+                "next_search": now + RETRY_DAYS * 86400, "note": f"{why}; trying again in {RETRY_DAYS} days"[:200]}
+    if state == "awaiting_approval":
+        return {"note": "waiting for approval in ReadMeABook"}
+    if state in readmeabook.DONE:
+        return {"note": "ReadMeABook: downloaded; waiting for it to appear in Audiobookshelf"}
+    return {"note": f"ReadMeABook: {state.replace('_', ' ')}" + (f" ({int(progress)}%)" if progress else "")}
+
+
+def _hand_off(cfg, row, now, route):
+    """Requests for this format go somewhere other than Shelfmark (ReadMeABook, your URL, a plug-in)."""
+    from . import extend
+    if route[0] == "readmeabook":
+        from .connectors import readmeabook
+        s = cfg.source("readmeabook")
+        book = readmeabook.best_match(s, re.split(r"\s+/\s+", row["title"])[0], row["author"] or "")
+        if not book:
+            return {"last_search": now, "next_search": now + RETRY_DAYS * 86400,
+                    "note": f"not found on Audible via ReadMeABook yet; next try in {RETRY_DAYS} days"}
+        rid, state, msg = readmeabook.request(s, book)
+        if state in readmeabook.DONE and not rid:
+            return {"last_search": now, "next_search": now + 86400, "note": "ReadMeABook says it's already in your library"}
+        return {"status": "downloading", "current": f"rmab:{rid}", "current_title": book.get("title"), "last_search": now,
+                "attempts": (row["attempts"] or 0) + 1, "note": msg[:200]}
+    item = {"format": row["format"], "title": row["title"], "authors": [row["author"]] if row["author"] else [],
+            "work_id": row["work_id"], "requested_by": row.get("account_id")}
+    out = extend.send(cfg, route, item)
+    where = "your request URL" if route[0] == "webhook" else extend.PLUGINS[route[1]]["spec"]["label"]
+    return {"status": "downloading", "current": "sent:" + str(out.get("external_id") or ""), "last_search": now,
+            "attempts": (row["attempts"] or 0) + 1, "note": f"sent to {where}: {out.get('message') or 'ok'}"[:200]}
+
+
 def _search_once(cfg, row, now):
+    route = _route(cfg, row["format"])
+    if route is None:
+        return {"last_search": now, "next_search": now + RETRY_DAYS * 86400, "note": "nothing is set up to request this format"}
+    if route[0] != "builtin":
+        return _hand_off(cfg, row, now, route)
     provider, book_id = _resolve_candidate(cfg, row)
     if not provider:
         return {"last_search": now, "next_search": now + RETRY_DAYS * 86400, "note": "book not found in metadata search yet"}

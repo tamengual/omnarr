@@ -28,6 +28,9 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+from . import extend                                    # noqa: E402
+# Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
+extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
 COOKIE = "omnarr_session"
 # Served under a path prefix? Reverse proxies: set OMNARR_BASE_PATH (e.g. /omnarr) and strip it
@@ -945,8 +948,11 @@ def api_work_requests(wid: str, request: Request):
     w = search.work(INDEX, wid, _adult_ok(_session(request)), account_id=(_account(request) or {}).get('id'))
     if not w:
         raise HTTPException(404, "Not found")
-    out = {"missing_formats": [], "adaptations": [], "shelfmark_enabled": requests_.shelfmark_enabled(cfg),
-           "seerr_enabled": bool(cfg.source("seerr")), "romarr_enabled": requests_.romarr_enabled(cfg)}
+    books_ok, screens_ok, games_ok = _can_request_books(), _can_request_screens(), _can_request_games()
+    out = {"missing_formats": [], "adaptations": [], "shelfmark_enabled": books_ok,
+           "seerr_enabled": screens_ok, "romarr_enabled": games_ok,
+           # "choose a copy myself" lists Shelfmark's releases, so it needs Shelfmark itself
+           "manual_pick": requests_.shelfmark_enabled(cfg)}
     if w.get("adult"):
         return out                           # private items are never looked up outside
     if w["kind"] == "book":
@@ -973,16 +979,44 @@ def api_work_requests(wid: str, request: Request):
                                 label=d["title"] or a["label"], year=d["year"] or a["year"])
             except Exception as e:
                 log.debug("seerr details failed: %s", e)
+        elif a["kind"] in ("movie", "tv") and a.get("tmdb") and screens_ok:
+            item["status"] = "not_requested"            # a webhook/plug-in takes screen requests (no Seerr)
         elif a["kind"] == "game":
-            item.update(status="not_requested" if requests_.romarr_enabled(cfg) else "no_requester",
+            item.update(status="not_requested" if games_ok else "no_requester",
                         url=f"https://www.igdb.com/games/{a['igdb']}" if a.get("igdb") else a["url"])
         elif a["kind"] in ("book", "comic"):
-            item["status"] = "not_requested" if requests_.shelfmark_enabled(cfg) else "no_requester"
+            item["status"] = "not_requested" if books_ok else "no_requester"
         out["adaptations"].append(item)
     return out
 
 
+def _can_request_books():
+    return requests_.shelfmark_enabled(cfg) or extend.any_requester(cfg, ("ebook", "audiobook", "comic"))
+
+
+def _can_request_screens():
+    return bool(cfg.source("seerr")) or extend.any_requester(cfg, ("movie", "tv"))
+
+
+def _can_request_games():
+    return requests_.romarr_enabled(cfg) or extend.any_requester(cfg, ("game",))
+
+
+def _send_custom(route, item):
+    """A request handed to your own URL or a plug-in instead of a built-in app."""
+    try:
+        out = extend.send(cfg, route, item)
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+    live._audit(STATE, "request.custom", {"route": route[0] if route[0] == "webhook" else route[1], "title": item.get("title")}, "ok")
+    return {"ok": True, "message": out.get("message") or "Sent"}
+
+
 def _do_screen(body, account_id=None):
+    route = extend.requester(cfg, "movie" if body["kind"] == "movie" else "tv")
+    if route[0] in ("webhook", "plugin"):
+        return _send_custom(route, {"format": body["kind"], "title": body.get("title") or "", "ids": {"tmdb": str(body["tmdb"])},
+                                    "requested_by": account_id})
     try:
         return requests_.seerr_request(cfg, body["kind"], body["tmdb"])
     except RuntimeError as e:
@@ -1518,6 +1552,10 @@ def api_game_platforms():
 
 
 def _do_game(body, account_id=None):
+    route = extend.requester(cfg, "game")
+    if route[0] in ("webhook", "plugin"):
+        return _send_custom(route, {"format": "game", "title": body["game"].strip(), "platform": body["platform"].strip(),
+                                    "requested_by": account_id})
     try:
         return requests_.game_request(cfg, body["game"].strip(), body["platform"].strip())
     except RuntimeError as e:
@@ -1784,6 +1822,13 @@ def _cover_original(source, sid, key):
         finally:
             con.close()
         return romm.image(cfg, r[0])[0] if r and r[0] else None
+    elif source == "custom" or source.startswith("plugin_"):
+        con = search.connect(INDEX)
+        try:
+            r = con.execute("SELECT json_extract(extra,'$.cover_url') FROM editions WHERE unit_key=?", (key,)).fetchone()
+        finally:
+            con.close()
+        return extend.cover_bytes(cfg, source, r[0]) if r and r[0] else None
     else:
         return None
     if p and os.path.exists(p):
@@ -1809,6 +1854,13 @@ def _thumbnail(data):
 def api_cover(key: str, request: Request):
     source, _, sid = key.partition(":")
     adult = source == "stash"
+    if source == "custom" or source.startswith("plugin_"):        # these can mark single items adult
+        con = search.connect(INDEX)
+        try:
+            r = con.execute("SELECT w.adult FROM editions e JOIN works w ON w.id=e.work_id WHERE e.unit_key=?", (key,)).fetchone()
+        finally:
+            con.close()
+        adult = bool(r and r[0])
     if adult and not _adult_ok(_session(request)):
         raise HTTPException(404, "No cover")          # gate BEFORE the cache, so cached adult covers stay gated
     headers = {"Cache-Control": "private, max-age=3600" if adult else "public, max-age=86400"}
