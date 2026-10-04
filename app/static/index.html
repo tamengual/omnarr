@@ -169,9 +169,18 @@
               <label class="field">Email<input name="email" type="email" autocomplete="email" aria-describedby="account-email-help account-message" disabled></label>
               <label class="check"><input name="notify_email" type="checkbox" aria-describedby="account-email-help" disabled><span>Email me when my requests are ready or decided</span></label>
               <p id="account-email-help" class="hint">Emails need an admin to set up Email in Connections.</p>
+              <fieldset class="bookbridge-fields">
+                <legend>Reading sync (BookBridge)</legend>
+                <label class="field">Username<input name="kosync_user" autocomplete="off" disabled></label>
+                <label class="field">Password<input name="kosync_key" type="password" autocomplete="off" disabled></label>
+                <p class="hint">If you use BookBridge with an e-reader, enter its KOSync login and Omnarr's ebook and read-along readers will keep your place in sync with it.</p>
+                <p class="hint">Clear both fields to unlink.</p>
+                <p id="bookbridge-admin-help" class="hint" hidden>Leave empty to use the server's own BookBridge login.</p>
+              </fieldset>
               <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save account</button><button id="account-retry" class="secondary-button" type="button" hidden>Try again</button></div>
             </form>
             <p id="account-message" class="connection-message" role="status" aria-live="polite"></p>
+            <section id="offline-account" hidden aria-label="Saved for offline"></section>
           </section>
           <section class="settings-options" aria-labelledby="settings-password-title">
             <h2 id="settings-password-title" class="check">Password</h2>

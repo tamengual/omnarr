@@ -45,6 +45,13 @@ def read(cfg):
             done = {r[0] for r in con.execute(f"SELECT book FROM custom_column_{int(read_col)}")}
         except Exception:
             done = set()
+    stars = {}                                    # the owner's own rating (Calibre: 0-10, i.e. half-stars)
+    try:
+        for r in con.execute("SELECT l.book, r.rating FROM books_ratings_link l JOIN ratings r ON r.id=l.rating"):
+            if r["rating"]:
+                stars[r["book"]] = r["rating"]
+    except Exception:
+        pass
 
     units = []
     for b in con.execute("SELECT id, title, timestamp, pubdate, series_index, path, has_cover FROM books"):
@@ -68,7 +75,8 @@ def read(cfg):
             library="Calibre",
             ids={k: v for k, v in ids.get(bid, {}).items() if k in ("isbn", "asin", "mobi-asin", "google", "goodreads")},
             match={"epub_names": [f"{n}.epub" for f, n, _ in formats if f == "EPUB"]},
-            extra={"formats": sorted({f[0] for f in formats}), "path": b["path"]},
+            extra={"formats": sorted({f[0] for f in formats}), "path": b["path"],
+                   **({"my_rating": stars[bid]} if bid in stars else {})},
         )
         units.append(u)
     con.close()

@@ -522,6 +522,22 @@ async def api_me_update(request: Request):
     for k in ("email", "notify_email"):
         if k in body:
             fields[k] = body[k]
+    # Your own BookBridge (KOSync) login, so the ebook and read-along readers sync your place.
+    if "kosync_user" in body or ("kosync_key" in body and not str(body["kosync_key"] or "").startswith("••••")):
+        user = str(body.get("kosync_user", acct["kosync_user"] or "") or "").strip()
+        new_key = body.get("kosync_key")
+        key = acct["kosync_key"] if new_key is None or str(new_key).startswith("••••") else str(new_key)
+        fields["kosync_user"] = user
+        if "kosync_key" in body and not str(body["kosync_key"] or "").startswith("••••"):
+            fields["kosync_key"] = key
+        s = cfg.source("bookbridge") or {}
+        if user and key:
+            if not s.get("sync_url"):
+                raise HTTPException(400, "BookBridge position sync isn't set up on this server yet")
+            ok, msg = await asyncio.to_thread(bookbridge_sync.check, {**s, "kosync_user": user, "kosync_key": key})
+            if not ok:
+                raise HTTPException(400, f"BookBridge: {msg}")
+            message.append("BookBridge sync linked")
     con = state()
     try:
         accounts.update(con, acct["id"], **fields)
@@ -621,7 +637,8 @@ def auth_logout(request: Request, response: Response):
 # ── search / browse ──────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"ok": os.path.exists(INDEX)}
+    from .version import VERSION
+    return {"ok": os.path.exists(INDEX), "version": VERSION}
 
 
 # ── setup wizard: connections to the other apps ─────────────────────────────
@@ -811,6 +828,114 @@ def _related_items(w):
         return []
     finally:
         con.close()
+
+
+# ── suggestions ("For you") ─────────────────────────────────────────────────
+SUGGEST_HOURS = 12
+_suggest_running = set()
+SUGGEST_TITLES = {"up_next": "Up next in your series", "library": "From your library",
+                  "screen": "Movies & shows you might like", "worlds": "From worlds you love"}
+
+
+def _related_for_row(row):
+    """requests_.related for an index row (books by title + author; screens by their ids)."""
+    w = {"kind": row["kind"], "title": row["title"], "authors": json.loads(row.get("authors") or "[]"), "editions": []}
+    if row["kind"] in ("movie", "show"):
+        con = search.connect(INDEX)
+        try:
+            w["editions"] = [{"extra": json.loads(r[0] or "{}")} for r in
+                             con.execute("SELECT extra FROM editions WHERE work_id=?", (row["id"],))]
+        finally:
+            con.close()
+    return _related_items(w)
+
+
+def _owned_screens(works, seeds, limit=15):
+    """[(work id, 'movie'|'tv', tmdb, weight, title)] for the best screen seeds with a TMDB id."""
+    con = search.connect(INDEX)
+    try:
+        tmdb = {wid_: str(t) for wid_, t in con.execute(
+            "SELECT work_id, json_extract(extra,'$.ids.tmdb') FROM editions WHERE json_extract(extra,'$.ids.tmdb') IS NOT NULL")}
+    finally:
+        con.close()
+    rows = [(wid_, "tv" if works[wid_]["kind"] == "show" else "movie", tmdb[wid_], wt, works[wid_]["title"])
+            for wid_, wt in seeds.items() if works[wid_]["kind"] in ("movie", "show") and wid_ in tmdb and wt > 0]
+    rows.sort(key=lambda r: works[r[0]].get("added") or "", reverse=True)   # newest first…
+    rows.sort(key=lambda r: -r[3])                                            # …within equal weight
+    return rows[:limit]
+
+
+def _suggest_online(aid, admin):
+    """The sections that need Wikidata/Seerr: computed in the background, cached per person."""
+    from . import suggest
+    try:
+        con = search.connect(INDEX, aid)
+        try:
+            works, seeds = suggest.load(con, aid, admin)
+        finally:
+            con.close()
+        by_tmdb, by_title = _library_index()
+        match = lambda it: _match_library(it, by_tmdb, by_title)
+        st = state()
+        try:
+            recs = lambda kind, tmdb: requests_.seerr_recommendations(cfg, st, kind, tmdb) if cfg.source("seerr") else []
+            screen = suggest.screen_picks(works, seeds, recs, match, _owned_screens(works, seeds))
+            worlds = suggest.worlds(works, seeds, _related_for_row, match,
+                                    skip_tmdb={(s["external"]["kind"], str(s["external"]["tmdb"])) for s in screen})
+            gaps = suggest.series_gaps(works, seeds, _related_for_row, match)
+            for sec in (screen, worlds):            # not-owned screens: whether it's already requested
+                for s in sec:
+                    if s["external"]["kind"] in ("movie", "tv") and s["external"].get("tmdb") and not s["external"].get("poster") \
+                            and cfg.source("seerr"):
+                        try:
+                            d = requests_.seerr_details(cfg, s["external"]["kind"], s["external"]["tmdb"])
+                            if d:
+                                s["external"].update(poster=d["poster"], status=d["status"], url=d["url"] or s["external"].get("url"))
+                        except Exception:
+                            pass
+            with st:
+                st.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (f"sugg:{aid}", json.dumps(
+                    {"at": time.time(), "screen": screen, "worlds": worlds, "gaps": gaps})))
+        finally:
+            st.close()
+    except Exception as e:
+        log.warning("suggestions for account %s failed: %s", aid, e)
+    finally:
+        _suggest_running.discard(aid)
+
+
+@app.get("/api/suggestions")
+def api_suggestions(request: Request, refresh: int = 0):
+    """{sections: [{key, title, items: [{work | external, reason}]}], refreshing}. Adult items
+    are never suggested. Library sections are computed now; the outside ones come from a
+    per-person cache that refreshes in the background every SUGGEST_HOURS."""
+    from . import suggest
+    sess = _session(request)
+    aid = sess["account"]["id"]
+    admin = sess["account"]["role"] == "admin"
+    con = search.connect(INDEX, aid)
+    try:
+        works, seeds = suggest.load(con, aid, admin)
+    finally:
+        con.close()
+    up = suggest.up_next(works, seeds)
+    lib = suggest.from_library(works, seeds, suggest.profile(works, seeds), skip={c["work"]["id"] for c in up})
+    st = state()
+    try:
+        row = st.execute("SELECT v FROM settings WHERE k=?", (f"sugg:{aid}",)).fetchone()
+    finally:
+        st.close()
+    cached = json.loads(row[0]) if row else {}
+    refreshing = False
+    if (refresh or cached.get("at", 0) < time.time() - SUGGEST_HOURS * 3600) and aid not in _suggest_running:
+        _suggest_running.add(aid)
+        threading.Thread(target=_suggest_online, args=(aid, admin), daemon=True, name="suggest").start()
+        refreshing = True
+    sections = {"up_next": (up + cached.get("gaps", []))[:suggest.PER_SECTION], "library": lib,
+                "screen": cached.get("screen", []), "worlds": cached.get("worlds", [])}
+    return {"sections": [{"key": k, "title": SUGGEST_TITLES[k], "items": v} for k, v in sections.items() if v],
+            "refreshing": refreshing or aid in _suggest_running,
+            "updated": cached.get("at")}
 
 
 @app.get("/api/work/{wid}/requests")
@@ -1085,7 +1210,7 @@ def _reader_edition(unit_key, request):
                            FROM editions e JOIN works w ON w.id=e.work_id WHERE e.unit_key=?""", (unit_key,)).fetchone()
     finally:
         con.close()
-    if not e or (e["adult"] and not _adult_ok(sess)) or e["source"] not in ("komga", "calibre"):
+    if not e or (e["adult"] and not _adult_ok(sess)) or e["source"] not in ("komga", "calibre", "storyteller"):
         raise HTTPException(404, "Not found")
     if not cfg.source(e["source"]):
         raise HTTPException(404, f"{e['source'].title()} is not connected")
@@ -1100,13 +1225,23 @@ def _iso_ts(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t or 0))
 
 
-def _bridge_doc(sess, e):
-    """BookBridge's document id when this person's ebook place should sync through it
-    (admins only: the KOSync login is the owner's), else None."""
-    s = cfg.source("bookbridge")
-    if e["source"] != "calibre" or not _owner_identity(sess) or not bookbridge_sync.configured(s):
-        return None
-    return bookbridge_sync.document_for_calibre(s, e["source_id"])
+def _bridge(sess, e):
+    """(settings with this person's KOSync login, BookBridge document id) when their place in this
+    ebook or read-along syncs through BookBridge, else (None, None). Anyone who linked their own
+    login uses it; admins without one use the server's (the owner's) login."""
+    s = cfg.source("bookbridge") or {}
+    if e["source"] not in ("calibre", "storyteller") or not s.get("sync_url") or not sess:
+        return None, None
+    acct = sess["account"]
+    if acct.get("kosync_user") and acct.get("kosync_key"):
+        s = {**s, "kosync_user": acct["kosync_user"], "kosync_key": acct["kosync_key"]}
+    elif not _owner_identity(sess):
+        return None, None
+    if not bookbridge_sync.configured(s):
+        return None, None
+    doc = (bookbridge_sync.document_for_calibre(s, e["source_id"]) if e["source"] == "calibre"
+           else bookbridge_sync.document_for_storyteller(s, e["source_id"]))
+    return (s, doc) if doc else (None, None)
 
 
 def _place_updated(aid, source, item_id):
@@ -1128,22 +1263,30 @@ def api_read_info(unit_key: str, request: Request):
     mine = playstate.get_place(STATE, aid, e["source"], e["source_id"])
     out = {"unit_key": unit_key, "title": e["title"] or e["work_title"], "source": e["source"],
            "progress_sync": True, "app_sync": False}
-    if e["source"] == "calibre":
-        fmts = set(json.loads(e["extra"] or "{}").get("formats") or [])
-        if not fmts & {"EPUB", "KEPUB"}:
-            raise HTTPException(400, "This book has no EPUB to read in the browser")
+    out["offline_allowed"] = accounts.allowed(sess["account"], "can_download") if sess else False
+    if e["source"] in ("calibre", "storyteller"):
+        if e["source"] == "calibre":
+            fmts = set(json.loads(e["extra"] or "{}").get("formats") or [])
+            if not fmts & {"EPUB", "KEPUB"}:
+                raise HTTPException(400, "This book has no EPUB to read in the browser")
+            out.update(mode="epub", file_url=f"api/read/file/{unit_key}")
+        else:
+            # A Storyteller read-along is ~1 GB with the narration inside: never sent whole. The
+            # reader opens it as a folder (root_url + member path) and streams one clip at a time.
+            _readalong_zip(e["source_id"])                # 400 now if the file isn't reachable
+            out.update(mode="readalong", root_url=f"api/read/part/storyteller/{e['source_id']}/")
         resume = {"locator": (mine or {}).get("locator"), "xpath": None, "fraction": (mine or {}).get("position") or 0,
                   "finished": bool(mine and mine["finished"]), "from": "omnarr"}
-        bb_doc = _bridge_doc(sess, e)
+        bb, bb_doc = _bridge(sess, e)
         if bb_doc:
             out["app_sync"] = True
-            theirs = bookbridge_sync.get_position(cfg.source("bookbridge"), bb_doc)
-            own_at = _place_updated(aid, "calibre", e["source_id"])
+            theirs = bookbridge_sync.get_position(bb, bb_doc)
+            own_at = _place_updated(aid, e["source"], e["source_id"])
             if theirs and theirs["fraction"] > 0 and (not mine or (theirs["updated"] or 0) > own_at + 5):
                 # BookBridge heard about a newer place (the Kobo, an audiobook...): start there
                 resume.update(locator=None, xpath=theirs["xpath"] or None, fraction=theirs["fraction"],
                               finished=theirs["fraction"] >= 0.995, **{"from": theirs["device"] or "BookBridge"})
-        out.update(mode="epub", file_url=f"api/read/file/{unit_key}", resume=resume)
+        out["resume"] = resume
         return out
     s = cfg.source("komga")
     if not komga.api_mode(s):
@@ -1173,10 +1316,49 @@ def api_read_info(unit_key: str, request: Request):
     if _owner_identity(sess) and rp and str(rp.get("lastModified") or "")[:19] >= when:
         page, finished = int(rp.get("page") or 0), bool(rp.get("completed"))   # Komga's own reader was later
     out.update(mode="pages", app_sync=_owner_identity(sess),
-               pages=[{"n": p["number"], "w": p.get("width"), "h": p.get("height")} for p in pages],
+               pages=[{"n": p["number"], "w": p.get("width"), "h": p.get("height"), "bytes": p.get("sizeBytes")} for p in pages],
                page_url=f"api/read/page/{e['source_id']}/",
                resume={"page": max(1, min(page or 1, len(pages))), "finished": finished})
     return out
+
+
+def _readalong_zip(uuid):
+    """Path of a Storyteller read-along EPUB, or 400 if Omnarr can't reach it."""
+    from . import files
+    try:
+        return files.storyteller(cfg, uuid)["path"]
+    except files.NotDownloadable as ex:
+        raise HTTPException(400, f"{ex} (Storyteller's library folder must be mounted and set in Connections)")
+
+
+@app.get("/api/read/part/{source}/{item_id}/{member:path}")
+def api_read_part(source: str, item_id: str, member: str, request: Request):
+    """One file from inside a read-along EPUB, as if the EPUB were a folder. Audio clips are
+    streamed straight from the (uncompressed) zip with Range support so the player can seek."""
+    from fastapi.responses import StreamingResponse
+    from . import epubparts
+    if source != "storyteller":
+        raise HTTPException(404, "Not found")
+    _reader_edition(f"{source}:{item_id}", request)
+    path = _readalong_zip(item_id)
+    info = epubparts.members(path).get(member)      # exact names only: no path tricks
+    if not info:
+        raise HTTPException(404, "Not found")
+    ctype = epubparts.content_type(member)
+    headers = {"Cache-Control": "private, max-age=86400"}
+    if info.compress_type != 0:
+        return Response(epubparts.read(path, info), media_type=ctype, headers=headers)
+    offset, size = epubparts.stored_span(path, info)
+    headers["Accept-Ranges"] = "bytes"
+    rng = epubparts.parse_range(request.headers.get("range"), size)
+    if request.headers.get("range") and not rng:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    start, end = rng or (0, size - 1)
+    headers["Content-Length"] = str(end - start + 1)
+    if rng:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(epubparts.iter_file(path, offset + start, end - start + 1),
+                             status_code=206 if rng else 200, media_type=ctype, headers=headers)
 
 
 @app.get("/api/read/page/{book_id}/{n}")
@@ -1238,11 +1420,12 @@ async def api_read_progress(request: Request):
     locator = str(b.get("locator") or "")[:2000] or None
     playstate.record(STATE, identity.account_id.get(), e["source"], e["source_id"], fraction, 1.0,
                      finished or fraction >= 0.995, locator=locator)
-    bb_doc = await asyncio.to_thread(_bridge_doc, sess, e)
+    bb, bb_doc = await asyncio.to_thread(_bridge, sess, e)
     if bb_doc and fraction > 0:
         xpath = str(b.get("xpath") or "")[:1000]
-        bookbridge_sync.put_position(cfg.source("bookbridge"), bb_doc, 1.0 if finished else fraction,
-                                     xpath if xpath.startswith("/body/DocFragment[") else "")
+        bookbridge_sync.put_position(bb, bb_doc, 1.0 if finished else fraction,
+                                     xpath if xpath.startswith("/body/DocFragment[") else "",
+                                     device_id=f"omnarr-{identity.account_id.get()}")
     return {"ok": True, "app_sync": bool(bb_doc)}
 
 

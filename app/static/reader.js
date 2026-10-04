@@ -32,7 +32,7 @@ window.OmnarrReader = (() => {
   dialog.innerHTML = `
     <header class="reader-top reader-chrome player-heading">
       <button type="button" class="icon-button" data-reader-close aria-label="Close reader">×</button>
-      <div class="reader-heading"><h2 id="reader-title">Loading book…</h2><p id="reader-chapter"></p></div>
+      <div class="reader-heading"><h2 id="reader-title">Loading book…</h2><p id="reader-chapter"></p><small id="reader-offline-status" hidden>Offline — showing saved items</small></div>
       <button type="button" class="secondary-button" id="reader-toc-toggle" aria-controls="reader-toc" aria-expanded="false" hidden>Contents</button>
       <button type="button" class="icon-button" id="reader-settings-toggle" aria-label="Reading settings" aria-controls="reader-settings" aria-expanded="false">⚙</button>
     </header>
@@ -42,6 +42,13 @@ window.OmnarrReader = (() => {
       <strong>Finished</strong><button type="button" class="primary-button" id="reader-next-book" hidden>Next book</button><button type="button" class="secondary-button" data-reader-close>Close</button>
     </section>
     <footer class="reader-bottom reader-chrome">
+      <div id="reader-narration" class="reader-narration" hidden>
+        <button type="button" class="secondary-button" id="reader-sentence-prev" aria-label="Previous sentence">⏮</button>
+        <button type="button" class="primary-button" id="reader-play" aria-label="Play narration">Play</button>
+        <button type="button" class="secondary-button" id="reader-sentence-next" aria-label="Next sentence">⏭</button>
+        <label class="sr-only" for="reader-speed">Narration speed</label><select id="reader-speed">${Array.from({ length: 6 }, (_, i) => 0.75 + i * 0.25).map((rate) => `<option value="${rate}">${rate}×</option>`).join("")}</select>
+        <output id="reader-elapsed" aria-label="Elapsed time in chapter">0:00</output>
+      </div>
       <button type="button" class="secondary-button" id="reader-prev" aria-label="Previous page" disabled>Previous</button>
       <div class="reader-position"><label class="sr-only" for="reader-scrubber">Reading position</label><input id="reader-scrubber" type="range" min="1" max="1" step="1" value="1" disabled><output id="reader-position" for="reader-scrubber" aria-live="polite"></output></div>
       <button type="button" class="secondary-button" id="reader-next" aria-label="Next page" disabled>Next</button>
@@ -59,16 +66,20 @@ window.OmnarrReader = (() => {
         <label>Theme<select data-preference="theme"><option value="system">System</option><option value="light">Light</option><option value="sepia">Sepia</option><option value="dark">Dark</option></select></label>
         <label>Layout<select data-preference="layout"><option value="paginated">Paginated</option><option value="scrolled-doc">Scrolled</option></select></label>
       </div>
+      <div id="reader-offline" hidden><button type="button" class="secondary-button" id="reader-save-offline">Save offline</button><p id="reader-offline-note" class="hint" hidden>Read-alongs can't be saved offline yet</p></div>
     </section>
     <nav id="reader-toc" class="reader-sheet reader-toc" aria-labelledby="reader-toc-title" hidden>
       <div class="reader-sheet-heading"><h3 id="reader-toc-title">Contents</h3><button type="button" class="icon-button" data-reader-dismiss aria-label="Close contents">×</button></div><div id="reader-toc-list"></div>
     </nav>`;
   document.body.append(dialog);
+  const backToNarration = document.createElement("button");
+  backToNarration.type = "button"; backToNarration.className = "reader-back secondary-button";
+  backToNarration.textContent = "Back to narration"; backToNarration.hidden = true; dialog.append(backToNarration);
   const stage = $("#reader-stage");
   const slider = $("#reader-scrubber");
   const panels = [$("#reader-settings"), $("#reader-toc")];
   const active = (state) => current === state && !state.closed;
-  const readInfo = (key, signal) => api(`api/read/info/${encodeURIComponent(key)}`, { cache: "no-store", signal });
+  const readInfo = (key, signal) => window.OmnarrOffline.readInfo(key, signal);
   function message(state, text) { if (active(state)) $("#reader-message").textContent = text; }
 
   // One queue covers turns, close, hidden tabs, and rapid switches between books.
@@ -91,8 +102,8 @@ window.OmnarrReader = (() => {
     reporting = true;
     lastReport = Date.now();
     try {
-      if (!entry.beaconOnly && entry.state.data.mode === "epub") {
-        const xpath = await (entry.xpathTask || saveXPath(entry.state, entry.payload.locator));
+      if (!entry.beaconOnly && ["epub", "readalong"].includes(entry.state.data.mode)) {
+        const xpath = await (entry.xpathTask || progressXPath(entry.state, entry.payload.locator));
         if (xpath) entry.body = JSON.stringify({ ...entry.payload, xpath });
       }
       // Async DOM resolution must not shorten the interval between actual requests.
@@ -100,7 +111,7 @@ window.OmnarrReader = (() => {
       if (entry.beaconOnly) {
         if (!navigator.sendBeacon?.("api/read/progress", new Blob([entry.body], { type: "application/json" }))) throw new Error("Your place could not be saved.");
       } else {
-        await api("api/read/progress", { method: "POST", body: entry.body, keepalive: entry.urgent });
+        await window.OmnarrOffline.progress(JSON.parse(entry.body), entry.revision);
       }
       if (active(entry.state) && $("#reader-message").dataset.sync) {
         message(entry.state, "");
@@ -127,8 +138,11 @@ window.OmnarrReader = (() => {
     if (body === state.lastQueued && !previous) return;
     state.lastQueued = body;
     // Capture a closing book's DOM before teardown, even if another save is in flight.
-    const xpathTask = urgent && state.data.mode === "epub" ? saveXPath(state, payload.locator) : null;
-    pending.set(payload.unit_key, { state, payload, body, xpathTask, urgent, due: Date.now() + (urgent ? 0 : 1500) });
+    const xpathTask = urgent && ["epub", "readalong"].includes(state.data.mode) ? progressXPath(state, payload.locator) : null;
+    // Persist before the debounce so closing an offline home-screen app cannot lose a turn.
+    let revision;
+    try { revision = window.OmnarrOffline.queue(payload); } catch { message(state, "Device storage is unavailable; keep this reader open to sync your place."); }
+    pending.set(payload.unit_key, { state, payload, body, xpathTask, revision, urgent, due: Date.now() + (urgent ? 0 : 1500) });
     // Start a close/hidden report synchronously when the rate limit permits.
     if (urgent && !reporting && Date.now() >= lastReport + 1000) void sendReport();
     else scheduleReports();
@@ -188,6 +202,7 @@ window.OmnarrReader = (() => {
   function closeAll(restore = true) {
     const state = current;
     if (state) {
+      stopNarration(state);
       report(state, true);
       state.closed = true;
       state.controller.abort();
@@ -234,20 +249,27 @@ window.OmnarrReader = (() => {
     $("#reader-settings-toggle").disabled = true;
     $("#reader-prev").disabled = $("#reader-next").disabled = slider.disabled = true;
     $("#reader-position").textContent = "";
+    $("#reader-narration").hidden = true;
+    $("#reader-offline").hidden = true;
+    backToNarration.hidden = true;
     dismissPanels(false);
     dialog.showModal();
     $("[data-reader-close]").focus();
     try {
       const data = await readInfo(key, state.controller.signal);
       if (!active(state)) return;
-      if (!["pages", "epub"].includes(data.mode) || !data.unit_key) throw new Error("Reading details are incomplete. Reopen this book to try again.");
+      if (!["pages", "epub", "readalong"].includes(data.mode) || !data.unit_key) throw new Error("Reading details are incomplete. Reopen this book to try again.");
       state.data = data;
       dialog.dataset.mode = data.mode;
       $("#reader-title").textContent = data.title || "Book";
       $("#reader-chapter").textContent = data.series || "";
-      $("#reader-settings-toggle").disabled = data.mode === "epub";
+      $("#reader-settings-toggle").disabled = data.mode !== "pages";
       $("#reader-comic-settings").hidden = data.mode !== "pages";
-      $("#reader-epub-settings").hidden = data.mode !== "epub";
+      $("#reader-epub-settings").hidden = data.mode === "pages";
+      $("#reader-offline").hidden = !data.offline_allowed;
+      $("#reader-save-offline").hidden = data.mode === "readalong";
+      $("#reader-offline-note").hidden = data.mode !== "readalong";
+      $("#reader-narration").hidden = data.mode !== "readalong";
       $("#reader-komga-sync").hidden = !data.app_sync;
       dialog.querySelectorAll("[data-preference]").forEach((select) => { select.value = prefs[select.dataset.preference]; });
       message(state, "");
@@ -401,6 +423,16 @@ window.OmnarrReader = (() => {
     void task.then(() => state.saveTasks.delete(task));
     return task;
   }
+  function progressXPath(state, cfi) {
+    // Keep pass 14's converter unchanged; its displayed-start guard also applies
+    // to the active narration element, which can differ from the page's start.
+    if (state.data.mode !== "readalong") return saveXPath(state, cfi);
+    const previous = state.location;
+    state.location = { ...previous, start: { ...previous?.start, cfi } };
+    const task = saveXPath(state, cfi);
+    state.location = previous;
+    return task;
+  }
   async function xpathToCfi(book, xpath) {
     let section;
     try {
@@ -442,12 +474,272 @@ window.OmnarrReader = (() => {
       if (active(state) && $("#reader-message").textContent === text) message(state, "");
     }, 4000);
   }
+
+  // One audio element for the entire read-along session, with chapter-local overlays.
+  const narrationActions = ['play', 'pause', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward'];
+  function clipTime(value) {
+    const text = String(value || '').replace(/^npt=/, '').replace(/s$/, '');
+    if (!/^(?:\d+:){0,2}\d+(?:\.\d+)?$/.test(text)) return NaN;
+    return text.split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0);
+  }
+  function memberUrl(path, base) {
+    const url = new URL(path, new URL(base, document.baseURI));
+    const root = new URL('./', document.baseURI);
+    if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) throw new Error('Narration member is outside this book server.');
+    return url.pathname.slice(root.pathname.length) + url.search + url.hash;
+  }
+  async function overlayFor(state, index) {
+    const section = state.book.spine.get(index);
+    if (!section) return [];
+    state.overlays ||= new Map();
+    if (state.overlays.has(index)) return state.overlays.get(index);
+    const manifest = state.book.packaging.manifest;
+    const overlay = manifest[manifest[section.idref]?.overlay];
+    if (!overlay || overlay.type !== 'application/smil+xml') { state.overlays.set(index, []); return []; }
+    const opf = memberUrl(state.book.container.packagePath, state.data.root_url);
+    const smilUrl = memberUrl(overlay.href, opf);
+    const source = await api(smilUrl, { responseType: 'text', signal: state.controller.signal });
+    const xml = new DOMParser().parseFromString(source, 'application/xml');
+    if (xml.querySelector('parsererror')) throw new Error('This chapter’s narration timing could not be read.');
+    const pars = [...xml.getElementsByTagNameNS('*', 'par')].flatMap((par) => {
+      const text = par.getElementsByTagNameNS('*', 'text')[0];
+      const audio = par.getElementsByTagNameNS('*', 'audio')[0];
+      if (!text || !audio) return [];
+      const target = memberUrl(text.getAttribute('src'), smilUrl);
+      const id = decodeURIComponent(target.split('#')[1] || '');
+      const begin = clipTime(audio.getAttribute('clipBegin'));
+      const end = clipTime(audio.getAttribute('clipEnd'));
+      if (!id || !Number.isFinite(begin) || !Number.isFinite(end) || end <= begin) return [];
+      return [{ id, target, src: memberUrl(audio.getAttribute('src'), smilUrl), begin, end, section: index }];
+    });
+    let elapsed = 0;
+    for (const par of pars) {
+      par.elapsed = elapsed; elapsed += par.end - par.begin;
+      const element = section.document?.getElementById(par.id);
+      if (element) par.cfi = section.cfiFromElement(element);
+    }
+    state.overlays.set(index, pars);
+    return pars;
+  }
+  function narrationElement(state, par = state.pars?.[state.parIndex]) {
+    if (!par) return null;
+    for (const contents of state.rendition?.getContents() || []) {
+      if (contents.sectionIndex !== par.section) continue;
+      const element = contents.document.getElementById(par.id);
+      if (element) return { element, contents, cfi: contents.cfiFromNode(element) };
+    }
+    return null;
+  }
+  function narrationProgress(state) {
+    const par = state.pars?.[state.parIndex];
+    if (!par || !state.narrationCfi) return;
+    const total = state.book.spine.spineItems.length;
+    const fraction = state.locationsReady ? state.book.locations.percentageFromCfi(state.narrationCfi) : (par.section + state.parIndex / Math.max(1, state.pars.length)) / Math.max(1, total);
+    state.progress = { locator: state.narrationCfi, fraction: clamp(fraction, 0, 1), finished: false };
+    $('#reader-position').textContent = `${Math.round(state.progress.fraction * 100)}%`;
+    report(state);
+  }
+  async function highlightNarration(state, force = false) {
+    if (!active(state)) return;
+    state.highlight?.classList.remove('omnarr-narration-active');
+    let found = narrationElement(state);
+    const par = state.pars?.[state.parIndex];
+    if (!par) return;
+    const following = force || Date.now() - (state.manualAt || 0) >= 8000;
+    let visible = false;
+    if (found) {
+      const rect = found.element.getBoundingClientRect();
+      const frame = found.contents.document.defaultView.frameElement.getBoundingClientRect();
+      const bounds = stage.getBoundingClientRect();
+      visible = rect.right + frame.left > bounds.left && rect.left + frame.left < bounds.right && rect.bottom + frame.top > bounds.top && rect.top + frame.top < bounds.bottom;
+      state.narrationCfi = found.cfi;
+    }
+    if (!found && par.cfi) state.narrationCfi = par.cfi;
+    if (!visible && !following) backToNarration.hidden = false;
+    else if (!visible && !state.following) {
+      state.following = true;
+      try {
+        if (found && prefs.layout === 'scrolled-doc') found.element.scrollIntoView({ block: 'center' });
+        else await state.rendition.display(found?.cfi || state.book.spine.get(par.section).href + '#' + encodeURIComponent(par.id));
+        found = narrationElement(state);
+      } catch (error) { message(state, error.message); }
+      finally { state.following = false; }
+    }
+    if (!active(state)) return;
+    if (found) {
+      state.highlight = found.element; state.highlight.classList.add('omnarr-narration-active'); state.narrationCfi = par.cfi = found.cfi;
+    }
+    if (following) backToNarration.hidden = true;
+    narrationProgress(state);
+  }
+  function mediaNarration(state) {
+    if (!navigator.mediaSession) return;
+    try {
+      if (window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title: state.data.title || 'Book', artist: state.data.author || state.book.packaging.metadata.creator || '', album: 'Omnarr' });
+      const handlers = { play: () => void playNarration(state), pause: () => pauseNarration(state), previoustrack: () => void stepSentence(state, -1), nexttrack: () => void stepSentence(state, 1), seekbackward: () => void stepSentence(state, -1), seekforward: () => void stepSentence(state, 1) };
+      for (const [action, handler] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Optional action. */ } }
+    } catch { /* Optional lock-screen metadata. */ }
+  }
+  function pauseNarration(state) {
+    if (!state?.audio) return;
+    state.wantPlay = false; state.audio.pause(); report(state, true);
+    updateNarrationControls(state);
+  }
+  function updateNarrationControls(state) {
+    if (!active(state) || !state.audio) return;
+    const playing = state.wantPlay && !state.audio.paused;
+    $('#reader-play').textContent = playing ? 'Pause' : 'Play';
+    $('#reader-play').setAttribute('aria-label', playing ? 'Pause narration' : 'Play narration');
+    if (navigator.mediaSession) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+    const par = state.pars?.[state.parIndex];
+    const seconds = Math.floor((par?.elapsed || 0) + (par ? clamp(state.audio.currentTime - par.begin, 0, par.end - par.begin) : 0));
+    $('#reader-elapsed').textContent = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  }
+  async function playNarration(state) {
+    if (!active(state) || !state.audio) return;
+    state.wantPlay = true;
+    if (state.seekingClip) return;
+    try {
+      if (!state.audio.getAttribute('src')) await selectSentence(state, state.parIndex || 0, true);
+      else await state.audio.play();
+      if (active(state)) mediaNarration(state);
+    } catch (error) {
+      state.wantPlay = false;
+      message(state, error.name === 'NotAllowedError' ? 'Tap Play to start narration.' : "This browser can't play the narration");
+    }
+    updateNarrationControls(state);
+  }
+  function stopNarration(state) {
+    if (!state.audio) return;
+    state.wantPlay = false; state.audio.pause(); cancelAnimationFrame(state.audioFrame);
+    state.audio.removeAttribute('src'); state.audio.load();
+    if (navigator.mediaSession) {
+      for (const action of narrationActions) { try { navigator.mediaSession.setActionHandler(action, null); } catch { /* Optional action. */ } }
+      navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none';
+      try { navigator.mediaSession.setPositionState?.(); } catch { /* Optional feature. */ }
+    }
+  }
+  function setupNarration(state) {
+    window.OmnarrPlayer?.closeAll();
+    const audio = state.audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    audio.defaultPlaybackRate = audio.playbackRate = Number(preference('speed', '1', ['0.75', '1', '1.25', '1.5', '1.75', '2']));
+    $('#reader-speed').value = String(audio.playbackRate);
+    state.pars = []; state.parIndex = 0;
+    const check = () => {
+      if (!active(state)) return;
+      updateNarrationControls(state);
+      const par = state.pars[state.parIndex];
+      if (state.wantPlay && !state.seekingClip && !state.changingSentence && par && audio.currentTime >= par.end - 0.05) void stepSentence(state, 1, true);
+      else if (state.wantPlay && !backToNarration.hidden && !state.following && !state.changingSentence && Date.now() - (state.manualAt || 0) >= 8000) void highlightNarration(state);
+    };
+    const frame = () => { check(); if (active(state) && !audio.paused) state.audioFrame = requestAnimationFrame(frame); };
+    audio.addEventListener('timeupdate', check);
+    audio.addEventListener('ended', check);
+    audio.addEventListener('play', () => { cancelAnimationFrame(state.audioFrame); state.audioFrame = requestAnimationFrame(frame); updateNarrationControls(state); });
+    audio.addEventListener('pause', () => { cancelAnimationFrame(state.audioFrame); updateNarrationControls(state); if (!state.seekingClip) report(state, true); });
+    audio.addEventListener('error', () => { if (!state.closed && audio.getAttribute('src')) { state.wantPlay = false; message(state, "This browser can't play the narration"); updateNarrationControls(state); } });
+    mediaNarration(state); updateNarrationControls(state);
+  }
+  async function selectSentence(state, index, play = false, continuous = false) {
+    const par = state.pars[index];
+    if (!par || !active(state)) { message(state, 'No narration for this part'); return; }
+    const old = state.pars[state.parIndex];
+    state.parIndex = index; state.wantPlay = play;
+    $('#reader-end').hidden = true;
+    state.narrationCfi = par.cfi || null;
+    const audio = state.audio;
+    const sameFile = audio.getAttribute('src') === par.src;
+    state.seekingClip = true;
+    try {
+      if (!sameFile) {
+        audio.pause();
+        await new Promise((resolve, reject) => {
+          const cleanup = () => { clearTimeout(timeout); audio.removeEventListener('loadedmetadata', loaded); audio.removeEventListener('error', failed); state.controller.signal.removeEventListener('abort', aborted); };
+          const loaded = () => { cleanup(); resolve(); };
+          const failed = () => { cleanup(); reject(new Error('Audio metadata unavailable')); };
+          const aborted = () => { cleanup(); reject(new DOMException('Closed', 'AbortError')); };
+          const timeout = setTimeout(failed, 15000);
+          audio.addEventListener('loadedmetadata', loaded, { once: true }); audio.addEventListener('error', failed, { once: true }); state.controller.signal.addEventListener('abort', aborted, { once: true });
+          audio.src = par.src; audio.load();
+        });
+      }
+      if (!active(state)) return;
+      if (!(continuous && sameFile && old && Math.abs(old.end - par.begin) <= 0.15)) audio.currentTime = par.begin;
+      if (state.wantPlay) await audio.play();
+      else audio.pause();
+    } catch (error) {
+      if (active(state)) { state.wantPlay = false; message(state, error.name === 'NotAllowedError' ? 'Tap Play to start narration.' : "This browser can't play the narration"); }
+    } finally {
+      state.seekingClip = false;
+      if (active(state)) { await highlightNarration(state); updateNarrationControls(state); }
+    }
+  }
+  async function stepSentence(state, direction, continuous = false) {
+    if (!active(state) || state.changingSentence) return;
+    state.changingSentence = true;
+    const play = state.wantPlay;
+    try {
+      const next = state.parIndex + direction;
+      const visibleIndex = state.location?.start?.cfi ? state.book.spine.get(state.location.start.cfi)?.index : undefined;
+      const noNarration = state.overlays?.get(visibleIndex)?.length === 0;
+      if (!noNarration && next >= 0 && next < state.pars.length) await selectSentence(state, next, play, continuous);
+      else {
+        const start = noNarration ? visibleIndex : state.pars[state.parIndex]?.section ?? visibleIndex ?? -1;
+        for (let index = start + direction; index >= 0 && index < state.book.spine.spineItems.length; index += direction) {
+          if (!state.book.packaging.manifest[state.book.spine.get(index).idref]?.overlay) continue;
+          const pars = await overlayFor(state, index);
+          if (!active(state)) return;
+          if (!pars.length) continue;
+          state.audio.pause(); state.pars = pars; state.parIndex = direction > 0 ? 0 : pars.length - 1;
+          const section = state.book.spine.get(index);
+          if (!continuous || Date.now() - (state.manualAt || 0) >= 8000) {
+            state.manualAt = 0;
+            await state.rendition.display(section.href);
+          } else {
+            // Keep the user's page in place even when narration changes chapters.
+            await section.load(state.book.load.bind(state.book));
+            for (const par of pars) { const element = section.document.getElementById(par.id); if (element) par.cfi = section.cfiFromElement(element); }
+          }
+          await selectSentence(state, state.parIndex, play); return;
+        }
+        pauseNarration(state);
+        if (direction > 0) { state.progress = { ...state.progress, fraction: 1, finished: true }; report(state, true); $('#reader-end').hidden = false; }
+      }
+    } catch (error) { pauseNarration(state); message(state, error.message); }
+    finally { state.changingSentence = false; }
+  }
+  async function resumeNarration(state, locator, target) {
+    // display() can settle before its relocated event; use the requested target.
+    const section = state.book.spine.get(locator || target || state.location?.start?.cfi) || state.book.spine.get(0);
+    const pars = await overlayFor(state, section.index);
+    if (!active(state)) return;
+    state.pars = pars; state.parIndex = 0;
+    if (!pars.length) { message(state, 'No narration for this part'); return; }
+    if (locator) {
+      const comparator = new window.ePub.CFI();
+      let index = pars.findIndex((par) => {
+        const found = narrationElement(state, par);
+        return found && comparator.compare(found.cfi, locator) >= 0;
+      });
+      state.parIndex = index < 0 ? pars.length - 1 : index;
+    } else if (state.data.resume?.fraction > 0) {
+      const within = state.data.resume.fraction * state.book.spine.spineItems.length - section.index;
+      state.parIndex = clamp(Math.floor(within * pars.length), 0, pars.length - 1);
+    }
+    state.changingSentence = true;
+    try { await selectSentence(state, state.parIndex, false); }
+    finally { state.changingSentence = false; }
+    resumeToast(state);
+  }
+
   async function openEpub(state) {
-    if (!state.data.file_url) throw new Error("This book has no EPUB to read in the browser.");
+    const along = state.data.mode === "readalong";
+    if (!(along ? state.data.root_url : state.data.file_url)) throw new Error("This book has no EPUB to read in the browser.");
     message(state, "Loading ebook…");
     await loadEngine();
     if (!active(state)) return;
-    const book = state.book = window.ePub(state.data.file_url, { openAs: "epub" });
+    const book = state.book = along ? window.ePub(state.data.root_url) : window.ePub(state.data.file_url, { openAs: "epub" });
     book.on("openFailed", (error) => {
       state.bookFailed = true;
       message(state, error.message || "This EPUB could not be opened.");
@@ -488,6 +780,27 @@ window.OmnarrReader = (() => {
     }
     const fractionResume = !locator && resume?.fraction > 0;
     state.resuming = true;
+    if (along) {
+      setupNarration(state);
+      let target = locator;
+      if (!target && fractionResume) target = book.spine.get(Math.min(book.spine.spineItems.length - 1, Math.floor(resume.fraction * book.spine.spineItems.length))).href;
+      if (!target) target = book.spine.spineItems.find((section) => book.packaging.manifest[section.idref]?.overlay)?.href;
+      try { await renderEpub(state, target); }
+      catch (error) {
+        if (!locator) throw error;
+        locator = resume?.xpath ? await xpathToCfi(book, resume.xpath) : null;
+        if (!active(state)) return;
+        target = locator || book.spine.get(Math.min(book.spine.spineItems.length - 1, Math.floor((resume?.fraction || 0) * book.spine.spineItems.length))).href;
+        await renderEpub(state, target);
+      }
+      if (!active(state)) return;
+      state.resuming = false;
+      $('#reader-settings-toggle').disabled = $('#reader-toc-toggle').disabled = false;
+      await resumeNarration(state, locator, target);
+      // locations.generate() fetches EVERY spine document. Keep directory books lazy;
+      // use loaded locations if available, otherwise chapter/sentence estimates.
+      return;
+    }
     await renderEpub(state, locator || undefined);
     if (!active(state)) return;
     state.resuming = fractionResume;
@@ -519,6 +832,7 @@ window.OmnarrReader = (() => {
     if (!active(state) || state.navigating) return;
     const version = state.renditionVersion;
     state.navigating = true;
+    if (state.audio) state.manualAt = Date.now();
     try { await operation(); }
     catch (error) { message(state, error.message || "This part of the book could not be displayed."); }
     finally { if (version === state.renditionVersion) state.navigating = false; }
@@ -544,8 +858,11 @@ window.OmnarrReader = (() => {
     stage.append(target);
     const rendition = state.rendition = state.book.renderTo(target, { width: "100%", height: "100%", flow: prefs.layout, spread: "auto", allowScriptedContent: false });
     const valid = () => active(state) && version === state.renditionVersion;
+    rendition.hooks.content.register((contents) => {
+      contents.document.addEventListener('wheel', () => { if (valid() && state.audio) state.manualAt = Date.now(); }, { passive: true });
+    });
     for (const [name, colors] of Object.entries({ light: ["#fbfaf6", "#1d2426"], sepia: ["#f1e5cf", "#493b2b"], dark: ["#151a21", "#e4e6eb"] })) {
-      rendition.themes.register(name, { body: { background: `${colors[0]} !important`, color: `${colors[1]} !important` }, "a": { color: name === "dark" ? "#efa17c !important" : "#a43e23 !important" }, "img, svg": { "max-width": "100%" }, "*": { "animation": "none !important", "transition": "none !important" } });
+      rendition.themes.register(name, { body: { background: `${colors[0]} !important`, color: `${colors[1]} !important` }, "a": { color: name === "dark" ? "#efa17c !important" : "#a43e23 !important" }, ".omnarr-narration-active, .-epub-media-overlay-active": { background: name === "dark" ? "#705521 !important" : "#f5e6a5 !important", color: name === "dark" ? "#fff1d4 !important" : "#302b20 !important" }, "img, svg": { "max-width": "100%" }, "*": { "animation": "none !important", "transition": "none !important" } });
     }
     applyTheme(state);
     rendition.on("relocated", (location) => { if (valid()) relocated(state, location); });
@@ -565,6 +882,7 @@ window.OmnarrReader = (() => {
     message(state, "");
     $("#reader-prev").disabled = Boolean(state.location?.atStart);
     $("#reader-next").disabled = Boolean(state.location?.atEnd);
+    if (state.audio && state.pars?.length) void highlightNarration(state);
   }
   function relocated(state, location) {
     state.location = location;
@@ -591,6 +909,23 @@ window.OmnarrReader = (() => {
     const resume = state.data.resume;
     const hasResume = Boolean(resume?.locator || resume?.xpath || resume?.fraction > 0);
     if (state.resuming) return;
+    if (state.audio) {
+      const section = state.book.spine.get(start.cfi);
+      if (section && !state.book.packaging.manifest[section.idref]?.overlay) {
+        state.overlays.set(section.index, []);
+        message(state, 'No narration for this part');
+      }
+      // Load only the displayed chapter's overlay so tapping a manually visited
+      // sentence works while the audio remains at the previous narration position.
+      if (section) void overlayFor(state, section.index).catch((error) => message(state, error.message));
+      if (state.pars?.length) {
+        narrationProgress(state);
+        const estimated = state.progress?.fraction || 0;
+        $('#reader-position').textContent = `${Math.round(estimated * 100)}%`;
+        if (!state.following && state.wantPlay) backToNarration.hidden = false;
+      }
+      return;
+    }
     if (!fraction && !state.locationsReady && hasResume) return;
     state.progress = { fraction, locator: start.cfi, finished: Boolean(location.atEnd) };
     report(state);
@@ -612,6 +947,10 @@ window.OmnarrReader = (() => {
     if (event.target?.closest?.("input, select, textarea, [contenteditable='true']") ||
       (event.key === " " && interactive(event.target)) || event.ctrlKey || event.metaKey || event.altKey || !panels.every((panel) => panel.hidden)) return;
     let direction;
+    if (current.audio) {
+      if (event.key === ' ') { event.preventDefault(); current.wantPlay ? pauseNarration(current) : void playNarration(current); return; }
+      if (event.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); void stepSentence(current, event.key === 'ArrowLeft' ? -1 : 1); return; }
+    }
     if (event.key === "ArrowLeft") direction = -directionSign();
     if (event.key === "ArrowRight") direction = directionSign();
     if (event.key === "PageUp" || (event.key === " " && event.shiftKey)) direction = -1;
@@ -635,12 +974,29 @@ window.OmnarrReader = (() => {
     const dx = event.changedTouches[0].clientX - start.x;
     const dy = event.changedTouches[0].clientY - start.y;
     if (Math.abs(dx) > 12 || Math.abs(dy) > 12) suppressClickUntil = Date.now() + 700;
+    if (current?.audio && Math.abs(dy) > 12) current.manualAt = Date.now();
     if (!interactive(start.target) && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - start.time < 900) turn((dx < 0 ? 1 : -1) * directionSign());
   }
   function tap(event, contents) {
     if (Date.now() < suppressClickUntil || interactive(event.target) || zoomed()) return;
     const selection = contents?.window?.getSelection?.() || window.getSelection();
     if (selection && !selection.isCollapsed) return;
+    if (current?.audio && contents) {
+      const state = current;
+      const pars = state.overlays?.get(contents.sectionIndex);
+      const index = pars?.findIndex((par) => {
+        const span = contents.document.getElementById(par.id);
+        return span && (span === event.target || span.contains(event.target));
+      }) ?? -1;
+      if (index >= 0) {
+        event.preventDefault();
+        if (!state.changingSentence) {
+          state.changingSentence = true; state.manualAt = 0; state.pars = pars;
+          void selectSentence(state, index, true).finally(() => { state.changingSentence = false; });
+        }
+        return;
+      }
+    }
     if (!contents) stage.focus({ preventScroll: true });
     const rect = stage.getBoundingClientRect();
     const frame = contents?.document?.defaultView?.frameElement;
@@ -661,6 +1017,12 @@ window.OmnarrReader = (() => {
   stage.addEventListener("touchcancel", () => { gesture = null; }, { passive: true });
   $("#reader-settings-toggle").onclick = () => togglePanel("#reader-settings");
   $("#reader-toc-toggle").onclick = () => togglePanel("#reader-toc");
+  $('#reader-save-offline').onclick = () => { if (current?.data) window.OmnarrOffline.offer(current.data); };
+  $('#reader-play').onclick = () => { if (current?.audio) current.wantPlay ? pauseNarration(current) : void playNarration(current); };
+  $('#reader-sentence-prev').onclick = () => { if (current?.audio) void stepSentence(current, -1); };
+  $('#reader-sentence-next').onclick = () => { if (current?.audio) void stepSentence(current, 1); };
+  $('#reader-speed').onchange = (event) => { savePreference('speed', event.target.value); if (current?.audio) current.audio.defaultPlaybackRate = current.audio.playbackRate = Number(event.target.value); };
+  backToNarration.onclick = () => { if (current?.audio) { current.manualAt = 0; void highlightNarration(current, true); } };
   $("#reader-prev").onclick = () => turn(-1);
   $("#reader-next").onclick = () => turn(1);
   $("#reader-next-book").onclick = () => { if (current?.data?.next) void open(current.data.next); };
@@ -706,6 +1068,10 @@ window.OmnarrReader = (() => {
   }
   window.addEventListener("resize", resize);
   window.addEventListener("orientationchange", resize);
+  const updateOfflineStatus = () => { $('#reader-offline-status').hidden = navigator.onLine; };
+  window.addEventListener('online', updateOfflineStatus);
+  window.addEventListener('offline', updateOfflineStatus);
+  updateOfflineStatus();
   window.addEventListener("pagehide", () => report(current, true));
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") report(current, true); });
   return { open, closeAll, readInfo };

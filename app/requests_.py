@@ -207,6 +207,42 @@ def seerr_details(cfg, kind, tmdb_id):
     }
 
 
+def seerr_recommendations(cfg, state_con, kind, tmdb_id, days=7):
+    """TMDB's "recommended" titles for a movie/show, through Seerr; cached for `days`.
+    -> [{kind: movie|tv, tmdb, title, year, poster, status}]"""
+    path = "movie" if kind == "movie" else "tv"
+    key = f"srec:{path}:{int(tmdb_id)}"
+    row = state_con.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
+    if row:
+        cached = json.loads(row[0])
+        if cached.get("at", 0) > time.time() - days * 86400:
+            return cached["items"]
+    c = _seerr(cfg)
+    if not c:
+        return []
+    items = []
+    try:
+        with c:
+            r = c.get(f"/{path}/{int(tmdb_id)}/recommendations", params={"page": 1})
+        if r.status_code == 200:
+            for x in r.json().get("results", [])[:20]:
+                mt = x.get("mediaType") or path
+                if mt not in ("movie", "tv"):
+                    continue
+                date = x.get("releaseDate") or x.get("firstAirDate") or ""
+                mi = x.get("mediaInfo") or {}
+                items.append({"kind": mt, "tmdb": x["id"], "title": x.get("title") or x.get("name") or "",
+                              "year": int(date[:4]) if date[:4].isdigit() else None,
+                              "poster": f"https://image.tmdb.org/t/p/w300{x['posterPath']}" if x.get("posterPath") else "",
+                              "status": SEERR_STATUS.get(mi.get("status"), "not_requested") if mi else "not_requested"})
+    except Exception as e:
+        log.warning("seerr recommendations failed for %s: %s", key, e)
+        return []
+    with state_con:
+        state_con.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, json.dumps({"at": time.time(), "items": items})))
+    return items
+
+
 def seerr_request(cfg, kind, tmdb_id):
     c = _seerr(cfg)
     if not c:

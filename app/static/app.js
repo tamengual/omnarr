@@ -100,6 +100,7 @@ function privateNotice(message = "") {
 function clearView() {
   ++viewEpoch;
   ++runSequence;
+  stopSuggestions();
   clearTimeout(queryTimer);
   detailController?.abort();
   stopActivity();
@@ -278,7 +279,7 @@ const safeUrl = (value) => {
 };
 
 async function api(path, options = {}) {
-  const { privateRequest = false, authRequest = false, ...fetchOptions } = options;
+  const { privateRequest = false, authRequest = false, responseType = "json", ...fetchOptions } = options;
   const epoch = viewEpoch;
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -296,6 +297,8 @@ async function api(path, options = {}) {
     showAuth(false);
     throw new Error("login");
   }
+  if (response.ok && responseType === "text") return response.text();
+  if (response.ok && responseType === "response") return response;
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.message || body.detail || body.error || response.statusText || "Something went wrong");
@@ -349,11 +352,13 @@ function setupPasswordSection(status) {
 
 async function boot() {
   try {
+    if (!navigator.onLine && OmnarrOffline.showLibrary()) return;
     if (inviteToken) return await showInvitation();
     const status = await api("api/auth/status", { authRequest: true, cache: "no-store" });
     if (!status.logged_in) return showAuth(status.setup_needed);
     currentUser = status.user;
     permissions = status.permissions || {};
+    await OmnarrOffline.setAccount(currentUser, permissions.can_download === true || isAdmin());
     adultStatus.allowed = Boolean(status.adult_allowed);
     applyAccountChrome();
     $("#auth").hidden = true;
@@ -373,6 +378,7 @@ async function boot() {
     if (settingsWelcome) $("#settings-title").focus();
     else if (wantsPrivate && adultStatus.enabled) openPrivate();
   } catch {
+    if (OmnarrOffline.showLibrary()) return;
     showAuth(false, "Omnarr could not be reached. Try again in a moment.");
   }
 }
@@ -714,6 +720,7 @@ function card(work, options = {}) {
       ${progress ? `<span class="progress-track" aria-label="${progress}% complete"><span style="width:${progress}%"></span></span>` : ""}
     </span>
     <span class="card-title">${esc(work.title)}</span>
+    ${options.reason ? `<span class="suggestion-reason">${esc(options.reason)}</span>` : ""}
     <span class="card-subtitle">${esc(workSubtitle(work))}</span>
     ${availabilityChip(work)}
   </button>`;
@@ -738,6 +745,7 @@ function applyHomePreset(index) {
 
 async function runHome() {
   const sequence = ++runSequence;
+  stopSuggestions();
   clearRequestSearch();
   $("#home-view").hidden = false;
   $("#results-view").hidden = true;
@@ -760,11 +768,130 @@ async function runHome() {
     }).join("");
     bindCards($("#home-rows"));
     $$("[data-home]", $("#home-rows")).forEach((button) => button.addEventListener("click", () => applyHomePreset(Number(button.dataset.home))));
+    if (!privateMode) startSuggestions(sequence);
   } catch (error) {
     if (error.message !== "login" && sequence === runSequence) $("#home-rows").innerHTML = `<div class="empty-state"><h2>Couldn’t load the library</h2><p>${esc(error.message)}</p><button class="secondary-button" type="button" id="retry-home">Try again</button></div>`;
     const retry = $("#retry-home");
     if (retry) retry.addEventListener("click", runHome);
   }
+}
+
+let suggestionsController;
+let suggestionsTimer;
+
+function stopSuggestions() {
+  clearTimeout(suggestionsTimer);
+  suggestionsController?.abort();
+  suggestionsController = null;
+}
+
+function startSuggestions(sequence) {
+  const controller = suggestionsController = new AbortController();
+  const { signal } = controller;
+  const root = document.createElement("div");
+  root.className = "suggestions";
+  $(".media-row", $("#home-rows")).after(root);
+  const active = () => !signal.aborted && sequence === runSequence && !privateMode && root.isConnected;
+  let pendingRender;
+  let refreshing = false;
+  let loadSequence = 0;
+
+  // Leave a focused card or open format picker intact until the user moves away.
+  // This also prevents a background poll from interrupting a request in flight.
+  const render = (data, finalPoll = false) => {
+    if (!active()) return;
+    if (root.contains(document.activeElement) && !document.activeElement.matches("[data-suggestions-refresh]")) {
+      pendingRender = () => render(data, finalPoll);
+      return;
+    }
+    if ($('[data-request]:disabled:not(.request-pill), [data-book-request]:disabled:not(.request-pill)', root)) {
+      pendingRender = () => render(data, finalPoll);
+      return;
+    }
+    pendingRender = null;
+    const restoreFocus = document.activeElement === $("[data-suggestions-refresh]", root);
+    const scrolls = new Map($$("[data-suggestion-section]", root).map((row) => [row.dataset.suggestionSection, $(".rail", row).scrollLeft]));
+    // Cached recommendations may still say not_requested after a successful request.
+    const requested = new Map($$("[data-suggestion-item]", root).filter((element) => element.suggestionItem && ["requested", "pending"].includes(element.suggestionItem.status)).map((element) => [element.dataset.suggestionItem, element.suggestionItem.status]));
+    root.replaceChildren();
+    const sections = (data.sections || []).map((section) => ({ ...section, items: (section.items || []).filter((item) => item.work ? allowedWork(item.work) : item.external && !isPrivateWork(item.external)) })).filter((section) => section.items.length);
+    for (const section of sections) {
+      const row = document.createElement("section");
+      row.className = "media-row";
+      row.dataset.suggestionSection = section.key;
+      row.innerHTML = `<div class="row-heading"><div><h2>${esc(section.title)}</h2></div></div><div class="rail" tabindex="0" role="region" aria-label="${esc(section.title)}"></div>`;
+      const rail = $(".rail", row);
+      for (const item of section.items) {
+        if (item.work) {
+          rail.insertAdjacentHTML("beforeend", card(item.work, { reason: item.reason }));
+        } else {
+          const external = { ...item.external };
+          const key = JSON.stringify([external.kind, external.tmdb || external.wikidata || external.url || external.title]);
+          if (external.status === "not_requested" && requested.has(key)) external.status = requested.get(key);
+          const holder = document.createElement("div");
+          renderRequestCards(holder, [external], true, false, false, { reason: item.reason });
+          const element = holder.firstElementChild;
+          element.dataset.suggestionItem = key;
+          element.suggestionItem = external;
+          rail.append(element);
+        }
+      }
+      root.append(row);
+      rail.scrollLeft = scrolls.get(section.key) || 0;
+    }
+    bindCards(root);
+    if (data.refreshing && ["screen", "worlds"].some((key) => !sections.some((section) => section.key === key))) {
+      root.insertAdjacentHTML("beforeend", `<div class="media-row suggestion-loading" role="status">${finalPoll ? "More suggestions are still being prepared." : "Finding more suggestions…"}</div>`);
+    }
+    if (root.lastElementChild) {
+      root.lastElementChild.insertAdjacentHTML("beforeend", '<div class="suggestion-footer"><button class="text-button" type="button" data-suggestions-refresh>Refresh suggestions</button><span class="hint" data-suggestions-message role="status"></span></div>');
+      $("[data-suggestions-refresh]", root).addEventListener("click", () => load(true));
+      if (restoreFocus) $("[data-suggestions-refresh]", root).focus({ preventScroll: true });
+    }
+  };
+  root.addEventListener("focusout", () => {
+    setTimeout(() => { if (active() && pendingRender) pendingRender(); }, 0);
+  }, { signal });
+  // Request completion changes the button class; retry a deferred render then.
+  const observer = new MutationObserver(() => { if (active() && pendingRender) pendingRender(); });
+  observer.observe(root, { attributes: true, subtree: true, attributeFilter: ["class", "disabled"] });
+  signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+
+  async function load(refresh = false, finalPoll = false) {
+    if (!active() || (refresh && refreshing)) return;
+    const requestSequence = ++loadSequence;
+    let scheduled = false;
+    if (refresh) {
+      refreshing = true;
+      pendingRender = null;
+      clearTimeout(suggestionsTimer);
+      suggestionsTimer = null;
+      $("[data-suggestions-refresh]", root).disabled = true;
+      $("[data-suggestions-message]", root).textContent = "Finding more suggestions…";
+    }
+    try {
+      const data = await api(`api/suggestions${refresh ? "?refresh=1" : ""}`, { signal, cache: "no-store" });
+      if (!active() || requestSequence !== loadSequence) return;
+      if (!refresh) render(data, finalPoll);
+      // One follow-up per visit or explicit refresh; never a polling loop.
+      if (!finalPoll && (refresh || data.refreshing)) {
+        clearTimeout(suggestionsTimer);
+        scheduled = true;
+        suggestionsTimer = setTimeout(() => { suggestionsTimer = null; load(false, true); }, 20000);
+      }
+    } catch (error) {
+      if (!active() || requestSequence !== loadSequence || error.message === "login") return;
+      const message = $("[data-suggestions-message]", root);
+      if (message) message.textContent = "Couldn’t refresh suggestions. Try again.";
+    } finally {
+      if (active() && requestSequence === loadSequence && (!refresh || !scheduled)) {
+        refreshing = false;
+        const button = $("[data-suggestions-refresh]", root);
+        if (button) button.disabled = false;
+      }
+    }
+  }
+  load();
 }
 
 function resultsHeading() {
@@ -835,6 +962,7 @@ async function runResults(append = false) {
 
 function run() {
   if ($("#app").hidden) return;
+  stopSuggestions();
   if (privateMode && !privateUnlocked()) { leavePrivate("Private collection locked."); return; }
   stopActivity();
   const activity = !privateMode && params.get("view") === "activity";
@@ -1107,6 +1235,7 @@ async function accountOperation(root, message, task) {
 }
 
 async function loadMyAccount() {
+  OmnarrOffline.render();
   const controller = settingsController;
   if (!controller) return;
   const form = $("#my-account-form");
@@ -1120,6 +1249,9 @@ async function loadMyAccount() {
     $('[name="abs_api_key"]', form).value = account.abs_api_key || "";
     form.elements.email.value = account.email || "";
     form.elements.notify_email.checked = account.notify_email === true;
+    form.elements.kosync_user.value = account.kosync_user || "";
+    form.elements.kosync_key.value = account.kosync_key || "";
+    $("#bookbridge-admin-help").hidden = !isAdmin();
     $("#account-identity").hidden = !isAdmin() || !account.uses_server_identity;
     $$("input, button[type=submit]", form).forEach((control) => { control.disabled = false; });
     connectionMessage($("#account-message"), "");
@@ -1134,7 +1266,7 @@ $("#account-retry").addEventListener("click", loadMyAccount);
 $("#my-account-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const payload = { jellyfin_user: $('[name="jellyfin_user"]', form).value.trim(), abs_api_key: $('[name="abs_api_key"]', form).value.trim(), email: form.elements.email.value.trim(), notify_email: form.elements.notify_email.checked };
+  const payload = { jellyfin_user: $('[name="jellyfin_user"]', form).value.trim(), abs_api_key: $('[name="abs_api_key"]', form).value.trim(), email: form.elements.email.value.trim(), notify_email: form.elements.notify_email.checked, kosync_user: form.elements.kosync_user.value.trim(), kosync_key: form.elements.kosync_key.value };
   accountOperation(form, $("#account-message"), async (signal, current) => {
     const result = await api("api/me", { method: "POST", body: JSON.stringify(payload), signal });
     if (!current()) return;
@@ -1669,7 +1801,7 @@ function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
   });
 }
 
-function renderRequestCards(root, items, seerrEnabled = true, search = false, romarrEnabled = false) {
+function renderRequestCards(root, items, seerrEnabled = true, search = false, romarrEnabled = false, suggestion = null) {
   items = items.filter((item) => !isPrivateWork(item));
   root.innerHTML = items.map((item) => {
     const title = item.label || item.title || "Untitled";
@@ -1677,11 +1809,11 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
     const url = item.url ? safeUrl(item.url) : "";
     let action;
     if (item.status === "available") {
-      action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${search ? "Available" : "In Jellyfin"}</span>`;
+      action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${suggestion ? "In library" : search ? "Available" : "In Jellyfin"}</span>`;
+    } else if (["requested", "partial", "pending", "processing"].includes(item.status)) {
+      action = `<button class="request-pill" type="button" disabled>${item.status === "pending" ? "Sent for approval" : item.status === "partial" ? "Partly available" : item.status === "processing" ? "Processing" : "Requested"}</button>`;
     } else if (!canSubmitRequest()) {
       action = '<span class="hint">Not available to play yet</span>';
-    } else if (["requested", "partial", "pending"].includes(item.status)) {
-      action = `<button class="request-pill" type="button" disabled>${item.status === "pending" ? "Sent for approval" : item.status === "partial" ? "Partly available" : "Requested"}</button>`;
     } else if (["book", "comic"].includes(item.kind) && item.status === "not_requested") {
       action = `<button class="secondary-button" type="button" data-book-request aria-expanded="false" aria-label="${requestLabel()} · ${esc(title)}">${requestLabel()}</button>`;
     } else if (["book", "comic"].includes(item.kind)) {
@@ -1696,7 +1828,7 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
       const label = item.status === "blocked" ? "Request blocked" : item.status === "unknown" ? "Availability unknown" : "Requests unavailable";
       action = `<span class="request-pill">${label}</span>`;
     }
-    return `<article class="request-card">${requestPoster(item)}<h4 class="card-title">${esc(title)}</h4><p class="card-subtitle">${esc([item.year, kind].filter(Boolean).join(" · "))}</p><div class="request-card-actions">${action}${url ? `<a class="request-details" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="${item.kind === "game" ? "View on IGDB" : "Details"} for ${esc(title)} (opens in a new tab)">${item.kind === "game" ? "View on IGDB" : "Details ↗"}</a>` : ""}</div><p class="request-message hint" aria-live="polite" aria-atomic="true"></p></article>`;
+    return `<article class="request-card${suggestion ? " suggestion-card" : ""}">${requestPoster(item)}<h4 class="card-title">${esc(title)}</h4>${suggestion ? `<p class="suggestion-reason">${esc(suggestion.reason)}</p>` : ""}<p class="card-subtitle">${esc([item.year, suggestion ? "" : kind].filter(Boolean).join(" · "))}${suggestion ? ` <span class="request-pill">${esc(kind)}</span>` : ""}</p><div class="request-card-actions">${action}${url ? `<a class="request-details" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="${item.kind === "game" ? "View on IGDB" : "Details"} for ${esc(title)} (opens in a new tab)">${item.kind === "game" ? "View on IGDB" : suggestion ? "View details ↗" : "Details ↗"}</a>` : ""}</div><p class="request-message hint" aria-live="polite" aria-atomic="true"></p></article>`;
   }).join("");
   $$(".cover-image", root).forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
   $$(".request-card", root).forEach((card, index) => {
@@ -2140,12 +2272,13 @@ function playButton(type, id, label, context = "") {
 
 function playbackActions(work) {
   const reading = (work.editions || []).filter((edition) => !edition.hidden && (edition.key || edition.source_id != null) &&
-    (edition.source === "komga" || (edition.source === "calibre" && (edition.extra?.formats || []).some((format) => /^(EPUB|KEPUB)$/i.test(format)))));
+    (edition.source === "storyteller" || edition.source === "komga" || (edition.source === "calibre" && (edition.extra?.formats || []).some((format) => /^(EPUB|KEPUB)$/i.test(format)))));
   const readButtons = reading.map((edition) => {
     const key = edition.key || `${edition.source}:${edition.source_id}`;
     const continuing = work.status === "in_progress" || (!edition.finished && edition.progress > 0);
     const source = reading.length > 1 ? ` · ${SOURCE[edition.source] || edition.source}` : "";
-    return `<button type="button" class="primary-button live-button" data-read="${esc(key)}" data-read-source="${esc(source)}" data-read-continuing="${continuing}" aria-label="${esc((continuing ? "Continue reading" : "Read") + source + " — " + work.title)}">${continuing ? "Continue reading" : "Read"}${esc(source)}</button>`;
+    const label = continuing ? "Continue reading" : edition.source === "storyteller" ? "Read along" : "Read";
+    return `<button type="button" class="primary-button live-button" data-read="${esc(key)}" data-read-source="${esc(source)}" data-read-continuing="${continuing}" aria-label="${esc(label + source + " — " + work.title)}">${label}${esc(source)}</button>`;
   }).join("");
   return (work.editions || []).filter((edition) => !edition.hidden && edition.source_id).map((edition) => {
     if (work.kind === "movie" && edition.source === "jellyfin") return playButton("video", edition.source_id, "Play", work.title);
@@ -2168,8 +2301,15 @@ function bindReading(root, signal) {
       const resume = info.resume || {};
       const continuing = !resume.finished && (resume.page > 1 || resume.fraction > 0 || resume.locator || button.dataset.readContinuing === "true");
       const position = info.mode === "pages" ? `page ${resume.page || 1} of ${info.pages.length}` : `${Math.round(percent((resume.fraction || 0) * 100))}%`;
-      button.textContent = `${continuing ? "Continue reading" : "Read"}${button.dataset.readSource}${continuing ? ` · ${position}` : ""}`;
+      button.textContent = `${continuing ? (info.mode === "readalong" ? "Continue" : "Continue reading") : info.mode === "readalong" ? "Read along" : "Read"}${button.dataset.readSource}${continuing ? ` · ${position}` : ""}`;
       button.setAttribute("aria-label", `${button.textContent} — ${info.title}`);
+      if (info.offline_allowed) {
+        const offline = document.createElement(info.mode === "readalong" ? "span" : "button");
+        offline.className = "secondary-button offline-work";
+        offline.textContent = info.mode === "readalong" ? "Read-alongs can't be saved offline yet" : "Save offline";
+        if (offline.tagName === "BUTTON") { offline.type = "button"; offline.onclick = () => OmnarrOffline.offer(info); }
+        button.after(offline);
+      }
     }).catch(() => { /* Read remains available; opening it shows the endpoint's error. */ });
   });
 }
@@ -2817,5 +2957,192 @@ document.addEventListener("visibilitychange", () => {
   stopActivity();
   if (activityVisible()) startActivity();
 });
+
+
+// Device-local bundles and an outbox; no account responses or credentials are cached.
+window.OmnarrOffline = (() => {
+  const storageKey = 'omnarr.offline.' + new URL('./', location.href).pathname;
+  const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(storageKey + key)) || fallback; } catch { return fallback; } };
+  const write = (key, value) => localStorage.setItem(storageKey + key, JSON.stringify(value));
+  let account = read('account', null);
+  let items = read('items', {});
+  let outbox = read('outbox', {});
+  let flushing = false;
+  let saving = false;
+  const revisions = new Map();
+  let registration;
+  const allowed = () => account?.allowed === true;
+  const sizeLabel = (bytes) => bytes == null ? 'Size unknown' : bytes < 1048576 ? Math.ceil(bytes / 1024) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB';
+  const cacheName = (key) => 'omnarr-offline-' + key;
+  const infoUrl = (key) => 'api/read/info/' + encodeURIComponent(key);
+  const banner = document.createElement('div');
+  banner.id = 'offline-banner'; banner.role = 'status'; banner.hidden = navigator.onLine;
+  banner.textContent = 'Offline — showing saved items'; document.body.prepend(banner);
+  const library = document.createElement('section');
+  library.id = 'offline-library'; library.hidden = true; document.body.append(library);
+  const sheet = document.createElement('dialog');
+  sheet.className = 'offline-dialog';
+  sheet.innerHTML = '<h2>Save offline</h2><p class="offline-summary"></p><p class="offline-status" role="status" aria-live="polite"></p><div class="connection-actions"><button type="button" class="primary-button offline-save">Save offline</button><button type="button" class="secondary-button offline-close">Close</button></div>';
+  document.body.append(sheet);
+  sheet.querySelector('.offline-close').onclick = () => sheet.close();
+  function renderList(root) {
+    root.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = 'Saved for offline'; root.append(title);
+    for (const item of Object.values(items)) {
+      const row = document.createElement('div'); row.className = 'offline-item';
+      const label = document.createElement('span'); label.textContent = item.title + ' · ' + sizeLabel(item.size) + ' · ' + new Date(item.saved).toLocaleDateString();
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'secondary-button'; open.textContent = 'Open'; open.onclick = () => OmnarrReader.open(item.unit_key, open);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button'; remove.textContent = 'Remove';
+      remove.onclick = async () => { remove.disabled = true; try { await removeItem(item.unit_key); } catch (error) { note.textContent = error.message; remove.disabled = false; } };
+      row.append(label, open, remove); root.append(row);
+    }
+    const note = document.createElement('p'); note.className = 'hint'; note.textContent = "Phones may clear saved items if the app isn't opened for a while (iPhone: about a week)."; root.append(note);
+    if (!Object.keys(items).length) { const empty = document.createElement('p'); empty.textContent = 'No saved books yet.'; root.append(empty); }
+    else {
+      const all = document.createElement('button'); all.type = 'button'; all.className = 'secondary-button'; all.textContent = 'Remove all';
+      all.onclick = async () => { all.disabled = true; try { for (const key of Object.keys(items)) await removeItem(key); } catch (error) { note.textContent = error.message; all.disabled = false; } };
+      root.append(all);
+    }
+  }
+  function render() {
+    const root = document.querySelector('#offline-account');
+    root.hidden = !allowed(); if (allowed()) renderList(root);
+    if (!library.hidden) renderList(library);
+  }
+  async function removeItem(key) {
+    await caches.delete(cacheName(key));
+    delete items[key]; write('items', items); render();
+  }
+  function showLibrary() {
+    if (!allowed()) return false;
+    document.querySelector('#auth').hidden = true; document.querySelector('#app').hidden = true;
+    library.hidden = false; render(); return true;
+  }
+  async function setAccount(user, canSave) {
+    const id = String(user?.id ?? user?.username ?? '');
+    if (account && account.id !== id) {
+      // Saved content belongs to the person who downloaded it on this device.
+      const previous = Object.keys(items); items = {}; outbox = {};
+      try { write('items', items); write('outbox', outbox); } catch { /* Storage disabled. */ }
+      for (const key of previous) await caches.delete(cacheName(key));
+    }
+    account = { id, allowed: canSave };
+    try { write('account', account); } catch { /* Saving will explain unavailable storage. */ }
+    library.hidden = true; render(); void flush();
+  }
+  async function init() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+      const health = await api('api/health');
+      registration = await navigator.serviceWorker.register('sw.js?v=' + encodeURIComponent(health.version), { updateViaCache: 'none' });
+    } catch { /* An installed worker remains available offline. */ }
+  }
+  async function offer(info) {
+    if (!info.offline_allowed) return;
+    const summary = sheet.querySelector('.offline-summary');
+    const status = sheet.querySelector('.offline-status');
+    const button = sheet.querySelector('.offline-save');
+    if (saving) { if (!sheet.open) sheet.showModal(); return; }
+    const pages = info.pages || [];
+    let size = info.mode === 'pages' && pages.every((page) => page.bytes != null) ? pages.reduce((sum, page) => sum + Number(page.bytes), 0) : null;
+    summary.textContent = info.title + ' · ' + (size != null ? sizeLabel(size) : info.mode === 'pages' ? 'about ' + pages.length + ' pages' : 'Size will be checked before saving');
+    status.textContent = info.mode === 'readalong' ? "Read-alongs can't be saved offline yet" : items[info.unit_key] ? 'Already saved on this device.' : '';
+    button.hidden = info.mode === 'readalong'; button.disabled = !!items[info.unit_key];
+    if (!sheet.open) sheet.showModal();
+    button.onclick = async () => {
+      if (saving) return;
+      saving = true; button.disabled = true;
+      const name = cacheName(info.unit_key);
+      try {
+        if (!navigator.onLine) throw new Error('Connect to the internet to save this book.');
+        if (!('caches' in window) || !('serviceWorker' in navigator)) throw new Error('Offline reading requires a secure connection and service worker support.');
+        write('items', items); // Fail before downloading if storage is unavailable.
+        if (!registration) await init();
+        if (!registration && !navigator.serviceWorker.controller) throw new Error('Offline support could not start. Reopen the app on a secure connection.');
+        await Promise.race([navigator.serviceWorker.ready, new Promise((_, reject) => setTimeout(() => reject(new Error('Offline support is still installing. Try again shortly.')), 20000))]);
+        const estimate = await navigator.storage?.estimate?.();
+        let remaining = estimate?.quota != null ? Math.max(0, estimate.quota - (estimate.usage || 0)) : Infinity;
+        if (size != null && size > remaining) throw new Error('Not enough storage to save this book. Remove saved items or free device storage.');
+        await caches.delete(name);
+        const cache = await caches.open(name);
+        const urls = info.mode === 'pages' ? pages.map((_, i) => info.page_url + (i + 1)) : [info.file_url];
+        let total = 0;
+        for (let i = 0; i < urls.length; i++) {
+          status.textContent = 'Saving ' + (i + 1) + ' / ' + urls.length;
+          const response = await api(urls[i], { responseType: 'response' });
+          const length = Number(response.headers.get('Content-Length')) || 0;
+          if (length > remaining - total) { await response.body?.cancel(); throw new Error('Not enough storage to save this book.'); }
+          const blob = await response.blob();
+          total += blob.size;
+          if (total > remaining) throw new Error('Not enough storage to save this book.');
+          const headers = new Headers(response.headers);
+          headers.delete('Content-Encoding'); headers.delete('Transfer-Encoding');
+          headers.set('Content-Length', String(blob.size));
+          await cache.put(urls[i], new Response(blob, { status: 200, headers }));
+        }
+        // Publish only a complete bundle. The worker ignores unfinished caches.
+        await cache.put(infoUrl(info.unit_key), new Response(JSON.stringify(info), { headers: { 'Content-Type': 'application/json' } }));
+        items[info.unit_key] = { title: info.title, unit_key: info.unit_key, kind: info.mode, size: total, saved: Date.now(), info };
+        write('items', items); render(); status.textContent = 'Saved for offline · ' + sizeLabel(total);
+        void navigator.storage?.persist?.().catch(() => {});
+      } catch (error) {
+        delete items[info.unit_key];
+        try { await caches.delete(name); write('items', items); } catch { /* Best-effort partial cleanup. */ }
+        status.textContent = error.name === 'QuotaExceededError' ? 'Not enough storage. Remove saved items or free device storage, then try again.' : error.message;
+        button.disabled = false;
+      } finally { saving = false; }
+    };
+  }
+  async function readInfo(key, signal) {
+    try {
+      const info = await api(infoUrl(key), { cache: 'no-store', signal });
+      // A cached bundle keeps the outbox's newer position when reopened.
+      if (outbox[key] && items[key]) info.resume = { ...info.resume, ...outbox[key], from: 'omnarr' };
+      return info;
+    } catch (error) {
+      if (signal?.aborted || error.status || error.message === 'login' || !allowed() || !items[key]) throw error;
+      const info = structuredClone(items[key].info);
+      if (outbox[key]) info.resume = { ...info.resume, ...outbox[key], from: 'omnarr' };
+      return info;
+    }
+  }
+  function queue(payload) {
+    const revision = (revisions.get(payload.unit_key) || 0) + 1;
+    revisions.set(payload.unit_key, revision);
+    outbox[payload.unit_key] = payload;
+    write('outbox', outbox);
+    return revision;
+  }
+  async function progress(payload, revision) {
+    if (revision != null && revisions.get(payload.unit_key) !== revision) return;
+    outbox[payload.unit_key] = payload;
+    try { write('outbox', outbox); }
+    catch {
+      // Disabled local storage must not prevent ordinary online progress saves.
+      await api('api/read/progress', { method: 'POST', body: JSON.stringify(payload), keepalive: true });
+      delete outbox[payload.unit_key];
+      return;
+    }
+    await flush();
+  }
+  async function flush() {
+    if (flushing || !navigator.onLine) return;
+    flushing = true;
+    try {
+      for (const [key, payload] of Object.entries(outbox)) {
+        try {
+          await api('api/read/progress', { method: 'POST', body: JSON.stringify(payload), keepalive: true });
+          if (outbox[key] === payload) { delete outbox[key]; write('outbox', outbox); }
+          if (items[key]) { items[key].info.resume = { ...items[key].info.resume, ...payload, from: 'omnarr' }; write('items', items); const cache = await caches.open(cacheName(key)); await cache.put(infoUrl(key), new Response(JSON.stringify(items[key].info), { headers: { 'Content-Type': 'application/json' } })); }
+        } catch { break; } // Keep even failed/auth-rejected requests for a later authenticated retry.
+      }
+    } finally { flushing = false; }
+  }
+  window.addEventListener('online', () => { banner.hidden = true; if (!library.hidden) void boot(); else void flush(); });
+  window.addEventListener('offline', () => { banner.hidden = false; });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void flush(); });
+  void init();
+  return { offer, readInfo, progress, queue, flush, render, setAccount, showLibrary };
+})();
 
 boot();

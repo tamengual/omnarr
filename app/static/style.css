@@ -436,6 +436,18 @@ button:disabled { cursor: wait; opacity: .55; }
 .rail .card { scroll-snap-align: start; }
 .row-empty { grid-column: 1 / -1; padding: 26px; color: var(--muted); background: var(--panel-2); }
 
+/* Suggestions share the home rails and request flows. */
+.private-mode .suggestions { display: none; }
+.suggestions .rail { align-items: start; }
+.suggestion-card { scroll-snap-align: start; }
+.suggestion-reason { display: block; max-width: 100%; margin: 4px 0 0; overflow: hidden; color: var(--muted); font-size: 11.5px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.suggestion-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 10px; }
+.suggestion-footer button, .suggestions .request-card-actions button, .suggestions .request-details, .suggestions .related-book-request button { min-height: 44px; }
+.suggestions .request-details { display: inline-flex; align-items: center; }
+.suggestions .request-picker { min-width: 0; }
+.suggestions .request-picker input, .suggestions .request-picker select { min-width: 0; max-width: 100%; font-size: 16px; }
+.suggestion-loading { color: var(--muted); font-size: 13px; }
+
 .results-head { min-height: 70px; display: flex; align-items: end; justify-content: space-between; gap: 22px; margin-bottom: 18px; }
 .results-head h1 { margin: 1px 0 0; font-family: ui-serif, Georgia, serif; font-size: clamp(30px, 3vw, 44px); font-weight: 600; letter-spacing: -.035em; line-height: 1.05; }
 .sort-wrap { display: flex; align-items: center; gap: 8px; }
@@ -872,3 +884,29 @@ dialog::backdrop { background: rgba(6, 10, 14, .72); backdrop-filter: blur(4px);
   .account-form input, .account-form select, .password-form input { font-size: 16px; }
   .account-form .connection-actions { gap: 8px; }
 }
+
+/* Read-along controls reserve room above the phone's home indicator. */
+.reader-overlay[data-mode="readalong"] .reader-stage { inset: calc(96px + env(safe-area-inset-top, 0px)) env(safe-area-inset-right, 0px) calc(146px + env(safe-area-inset-bottom, 0px)) env(safe-area-inset-left, 0px); }
+.reader-overlay[data-mode="readalong"] .reader-bottom { flex-wrap: wrap; gap: 6px 10px; }
+.reader-narration { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.reader-narration #reader-play { min-width: 76px; min-height: 48px; font-size: 15px; }
+.reader-narration select { width: 72px; min-width: 0; padding-inline: 6px; }
+#reader-elapsed { min-width: 36px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.reader-back { position: absolute; z-index: 5; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); border-radius: 30px; white-space: nowrap; box-shadow: var(--shadow-lg); }
+.reader-overlay[data-mode="readalong"] .reader-sheet { bottom: calc(148px + env(safe-area-inset-bottom, 0px)); max-height: calc(100% - 248px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
+.reader-overlay[data-mode="readalong"] .reader-end { bottom: calc(156px + env(safe-area-inset-bottom, 0px)); }
+.bookbridge-fields { min-width: 0; margin: 8px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.bookbridge-fields legend { font-weight: 600; padding-inline: 5px; }
+.bookbridge-fields .field + .field { margin-top: 12px; }
+.offline-work { font-size: 12px; white-space: normal; }
+span.offline-work { border: 0; color: var(--muted); align-self: center; }
+#offline-banner { position: sticky; top: 0; z-index: 30; padding: calc(6px + env(safe-area-inset-top, 0px)) 12px 6px; background: var(--panel); color: var(--text); text-align: center; font-size: 13px; }
+#offline-library { max-width: 760px; margin: 20px auto; padding: 16px; }
+#offline-account { margin-top: 24px; }
+.offline-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+.offline-item span { flex: 1 1 180px; overflow-wrap: anywhere; }
+.offline-item button { min-height: 44px; }
+.offline-dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow: auto; padding: 20px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.offline-dialog::backdrop { background: #0009; }
+.offline-dialog p { overflow-wrap: anywhere; }
+@media (max-width: 400px) { .reader-narration { gap: 6px; } .reader-narration button { padding-inline: 8px; } }

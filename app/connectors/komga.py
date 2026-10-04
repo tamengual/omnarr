@@ -19,11 +19,15 @@ ADULT_AGE = 18   # Komga age rating (ComicInfo "Adults Only 18+" sets 18): behin
 GENERIC_TITLE = re.compile(r"^(?:part|issue|vol\.?|volume|book|chapter|no\.?|#)?\s*0*(\d+[a-z]?)$", re.I)
 
 
-def display_title(title, series_title):
+def display_title(title, series_title, number=None):
     t = (title or "").strip()
     m = GENERIC_TITLE.match(t)
     if series_title and m:
         return f"{series_title} #{m.group(1)}"
+    # Komga falls back to the file name when there's no metadata ("The_Legend_of_Korra_-_…_Part_02_(2019)")
+    if series_title and number is not None and "_" in t and " " not in t:
+        n = int(number) if float(number).is_integer() else number
+        return f"{series_title} #{n}"
     return t
 
 
@@ -78,7 +82,7 @@ def _read_api(cfg, s):
             one_shot = (sr.get("booksCount") or 1) == 1 and not sm.get("title")
             units.append(Unit(
                 source="komga", source_id=b["id"], kind="comic", format="comic",
-                title=display_title(m.get("title") or b.get("name") or "", "" if one_shot else series_title),
+                title=display_title(m.get("title") or b.get("name") or "", "" if one_shot else series_title, m.get("numberSort")),
                 authors=authors,
                 series="" if one_shot else series_title, series_index=m.get("numberSort"),
                 year=year_of(m.get("releaseDate")),

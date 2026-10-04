@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 — 2026-10-04
+
+- **Read-alongs in Omnarr.** Storyteller books play with the narration and highlight the
+  sentence being read, turning pages as it goes:
+  - tap a sentence to play from it;
+  - speed control, and lock-screen controls on phones;
+  - the ~1 GB read-along file is never downloaded whole: Omnarr opens it like a folder and
+    streams one chapter and one audio clip at a time, with seeking.
+- **For you.** Suggestions on the home page, each with the reason it was picked:
+  - the next book in series you're reading (owned or not);
+  - unread books in your library by authors, worlds and genres you like;
+  - movies and shows like the ones you have (TMDB, through Seerr);
+  - adaptations and companions of what you loved.
+
+  It learns only from each person's own history in Omnarr, plus the owner's Calibre star
+  ratings. Nothing new leaves your server, and adult items are never suggested.
+- **Save for offline** (installed app): comics and ebooks can be kept on the device for reading
+  without a connection. Your place is saved and sent when you're back online. This is for
+  people allowed to save files to their device. Read-alongs aren't available offline yet.
+- **Your own BookBridge login.** Anyone with an e-reader on BookBridge can link their own KOSync
+  login in My account, so the ebook and read-along readers keep their place in sync too.
+- Komga issues whose title is a file name show as "Series #N".
+
 ## 0.4.0 — 2026-10-04
 
 **Read in Omnarr.** Comics and ebooks now open in Omnarr itself, like video and audiobooks.

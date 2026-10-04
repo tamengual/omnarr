@@ -58,6 +58,21 @@ def document_for_calibre(s, calibre_id):
         return None
 
 
+def document_for_storyteller(s, uuid):
+    """BookBridge's document id for a Storyteller read-along, or None if it isn't linked."""
+    try:
+        con = ro_connect(s["db"])
+        try:
+            r = con.execute("""SELECT kosync_doc_id FROM books WHERE storyteller_uuid=?
+                               AND kosync_doc_id IS NOT NULL AND kosync_doc_id != '' LIMIT 1""", (str(uuid),)).fetchone()
+        finally:
+            con.close()
+        return r[0] if r else None
+    except Exception as e:
+        log.warning("bookbridge lookup failed: %s", e)
+        return None
+
+
 def get_position(s, doc):
     """{fraction, xpath, updated (epoch s), device} or None."""
     try:
@@ -82,10 +97,11 @@ def get_position(s, doc):
             "device": d.get("device") or ""}
 
 
-def put_position(s, doc, fraction, xpath):
-    """Report a position (in the background; never slows the reader down)."""
+def put_position(s, doc, fraction, xpath, device_id=DEVICE_ID):
+    """Report a position (in the background; never slows the reader down). device_id is per
+    person, so BookBridge lets each person move their own place backwards."""
     body = {"document": doc, "percentage": round(float(fraction), 6), "progress": xpath or "",
-            "device": DEVICE, "device_id": DEVICE_ID}
+            "device": DEVICE, "device_id": device_id}
 
     def run():
         try:

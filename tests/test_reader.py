@@ -166,7 +166,7 @@ def _bridge(main, tmp, monkeypatch, theirs):
     main.cfg.save_connection("bookbridge", {"db": str(db), "sync_url": "http://bb", "kosync_user": "me", "kosync_key": "pw"})
     puts = []
     monkeypatch.setattr(main.bookbridge_sync, "get_position", lambda s, doc: theirs if doc == "abc123" else None)
-    monkeypatch.setattr(main.bookbridge_sync, "put_position", lambda s, doc, frac, xpath: puts.append((doc, frac, xpath)))
+    monkeypatch.setattr(main.bookbridge_sync, "put_position", lambda s, doc, frac, xpath, device_id=None: puts.append((doc, frac, xpath)))
     return puts
 
 
@@ -192,3 +192,10 @@ def test_own_newer_place_wins_and_members_never_sync(env, monkeypatch):
     guest.post("/api/read/progress", json={"unit_key": "calibre:1", "fraction": 0.7, "locator": "epubcfi(/6/12)"})
     info = guest.get("/api/read/info/calibre:1").json()
     assert not info["app_sync"] and info["resume"]["xpath"] is None and len(puts) == 1
+
+
+def test_komga_file_name_titles_become_series_numbers():
+    from app.connectors.komga import display_title
+    t = "The_Legend_of_Korra_-_Ruins_of_the_Empire_Part_02_(2019)_(digital)"
+    assert display_title(t, "The Legend of Korra: Ruins of the Empire", 2.0) == "The Legend of Korra: Ruins of the Empire #2"
+    assert display_title("Spidertales 1", "", 1.0) == "Spidertales 1"

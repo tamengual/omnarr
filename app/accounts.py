@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   ha_user_id TEXT UNIQUE, created REAL,
   can_request INTEGER NOT NULL DEFAULT 1, can_download INTEGER NOT NULL DEFAULT 0,
   can_upload INTEGER NOT NULL DEFAULT 0, can_ask INTEGER NOT NULL DEFAULT 0,
-  email TEXT, notify_email INTEGER NOT NULL DEFAULT 1)
+  email TEXT, notify_email INTEGER NOT NULL DEFAULT 1, kosync_user TEXT, kosync_key TEXT)
 """
 PERMISSIONS = ("can_request", "can_ask", "can_download", "can_upload", "adult_allowed")
 INVITES = """
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS invites (
 """
 ROLES = ("admin", "member")
 PUBLIC_FIELDS = ("id", "username", "role", "adult_allowed", "can_request", "can_ask", "can_download", "can_upload",
-                 "jellyfin_user", "abs_user", "created", "ha_user_id", "email", "notify_email")
+                 "jellyfin_user", "abs_user", "created", "ha_user_id", "email", "notify_email", "kosync_user")
 
 
 def hash_secret(secret, salt):
@@ -59,8 +59,9 @@ def ensure(con):
     for col, default in (("can_request", 1), ("can_download", 0), ("can_upload", 0), ("can_ask", 0), ("notify_email", 1)):
         if col not in cols:
             con.execute(f"ALTER TABLE accounts ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}")
-    if "email" not in cols:
-        con.execute("ALTER TABLE accounts ADD COLUMN email TEXT")
+    for col in ("email", "kosync_user", "kosync_key"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE accounts ADD COLUMN {col} TEXT")
     if "account_id" not in _columns(con, "sessions"):
         con.execute("ALTER TABLE sessions ADD COLUMN account_id INTEGER")
     for table in ("wanted_books",):              # (not `actions`: the audit log keeps its 4 columns)
@@ -97,6 +98,7 @@ def public(row):
     d["pin_set"] = bool(row["pin_hash"])
     key = row["abs_api_key"] or ""
     d["abs_api_key"] = ("••••" + key[-4:]) if key else ""
+    d["kosync_key"] = "••••" if ("kosync_key" in row.keys() and row["kosync_key"]) else ""
     return d
 
 
@@ -204,7 +206,8 @@ def _clean_name(s):
 
 
 def update(con, account_id, **fields):
-    settable = {"role", "jellyfin_user", "abs_user", "abs_api_key", "username", "email", "notify_email", *PERMISSIONS}
+    settable = {"role", "jellyfin_user", "abs_user", "abs_api_key", "username", "email", "notify_email",
+                "kosync_user", "kosync_key", *PERMISSIONS}
     sets = {k: v for k, v in fields.items() if k in settable}
     if "role" in sets and sets["role"] not in ROLES:
         raise ValueError("role must be admin or member")
@@ -218,7 +221,7 @@ def update(con, account_id, **fields):
             sets[k] = int(bool(sets[k]))
     if "email" in sets:
         sets["email"] = _clean_email(sets["email"])
-    for k in ("jellyfin_user", "abs_user", "abs_api_key"):
+    for k in ("jellyfin_user", "abs_user", "abs_api_key", "kosync_user", "kosync_key"):
         if k in sets:
             sets[k] = (str(sets[k]).strip() or None) if sets[k] is not None else None
     if not sets:
