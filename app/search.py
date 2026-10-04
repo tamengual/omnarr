@@ -19,9 +19,27 @@ LIST_FACETS = ("formats", "genres", "libraries", "sources")
 PARAM = {"formats": "format", "genres": "genre", "libraries": "library", "sources": "source"}
 
 
-def connect(path):
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+WORK_COLS = ("id, kind, title, sort_title, authors, narrators, series, series_index, year, description, genres, "
+             "tags, cover, duration, added, hidden, adult, rating, formats, sources, libraries, universe, "
+             "universe_index, series_key, info")
+
+
+class _Con(sqlite3.Connection):
+    works = "works"                               # table (or per-person view) holding the works
+
+
+def connect(path, account_id=None):
+    """Read-only index connection. With account_id, `works` progress/status/last_activity are
+    that person's own (a temp view over user_progress); without, the owner-level values."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, factory=_Con)
     con.row_factory = sqlite3.Row
+    if account_id is not None and con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='user_progress'").fetchone():
+        cols = ", ".join(f"w0.{c.strip()}" for c in WORK_COLS.split(","))
+        con.execute(f"""CREATE TEMP VIEW pw AS SELECT {cols}, up.progress AS progress,
+                        COALESCE(up.status, 'unread') AS status, up.last_activity AS last_activity
+                        FROM works w0 LEFT JOIN user_progress up ON up.work_id = w0.id AND up.account_id = {int(account_id)}""")
+        con.works = "pw"
     return con
 
 
@@ -117,8 +135,9 @@ def summary(r):
     }
 
 
-def search(path, p, adult_ok=False):
-    con = connect(path)
+def search(path, p, adult_ok=False, account_id=None):
+    con = connect(path, account_id)
+    W = con.works
     try:
         where, args, fts = _where(p, adult_ok)
         wsql = ("WHERE " + " AND ".join(where)) if where else ""
@@ -132,35 +151,36 @@ def search(path, p, adult_ok=False):
             order_args = []
         limit = max(1, min(int(p.get("limit") or 60), 500))
         offset = max(0, int(p.get("offset") or 0))
-        total = con.execute(f"SELECT count(*) FROM works w {wsql}", args).fetchone()[0]
-        rows = con.execute(f"SELECT w.* FROM works w {wsql} ORDER BY {order} NULLS LAST LIMIT ? OFFSET ?",
+        total = con.execute(f"SELECT count(*) FROM {W} w {wsql}", args).fetchone()[0]
+        rows = con.execute(f"SELECT w.* FROM {W} w {wsql} ORDER BY {order} NULLS LAST LIMIT ? OFFSET ?",
                            args + order_args + [limit, offset]).fetchall()
         facets = {}
         for col in ("kind", "status"):
             facets[col] = {r[0]: r[1] for r in con.execute(
-                f"SELECT w.{col}, count(*) FROM works w {wsql} GROUP BY 1 ORDER BY 2 DESC", args)}
+                f"SELECT w.{col}, count(*) FROM {W} w {wsql} GROUP BY 1 ORDER BY 2 DESC", args)}
         facets["availability"] = {r[0]: r[1] for r in con.execute(
-            f"SELECT json_extract(w.info,'$.availability'), count(*) FROM works w {wsql} "
+            f"SELECT json_extract(w.info,'$.availability'), count(*) FROM {W} w {wsql} "
             f"{'AND' if where else 'WHERE'} json_extract(w.info,'$.availability') <> '' GROUP BY 1", args)}
         facets["universes"] = {r[0]: r[1] for r in con.execute(
-            f"SELECT w.universe, count(*) FROM works w {wsql} {'AND' if where else 'WHERE'} w.universe <> '' "
+            f"SELECT w.universe, count(*) FROM {W} w {wsql} {'AND' if where else 'WHERE'} w.universe <> '' "
             "GROUP BY 1 ORDER BY 2 DESC", args)}
         for col in LIST_FACETS:
             facets[col] = {r[0]: r[1] for r in con.execute(
-                f"SELECT j.value, count(*) FROM works w, json_each(w.{col}) j {wsql} GROUP BY 1 ORDER BY 2 DESC LIMIT 60",
+                f"SELECT j.value, count(*) FROM {W} w, json_each(w.{col}) j {wsql} GROUP BY 1 ORDER BY 2 DESC LIMIT 60",
                 args)}
         facets["decade"] = {str(r[0]): r[1] for r in con.execute(
-            f"SELECT (w.year/10)*10, count(*) FROM works w {wsql} {'AND' if where else 'WHERE'} w.year IS NOT NULL "
+            f"SELECT (w.year/10)*10, count(*) FROM {W} w {wsql} {'AND' if where else 'WHERE'} w.year IS NOT NULL "
             "GROUP BY 1 ORDER BY 1 DESC", args)}
         return {"total": total, "offset": offset, "items": [summary(r) for r in rows], "facets": facets}
     finally:
         con.close()
 
 
-def work(path, wid, adult_ok=False):
-    con = connect(path)
+def work(path, wid, adult_ok=False, account_id=None):
+    con = connect(path, account_id)
+    W = con.works
     try:
-        r = con.execute("SELECT * FROM works WHERE id=?", (wid,)).fetchone()
+        r = con.execute(f"SELECT * FROM {W} WHERE id=?", (wid,)).fetchone()
         if not r or (r["adult"] and not adult_ok):
             return None
         out = summary(r)
@@ -176,17 +196,17 @@ def work(path, wid, adult_ok=False):
             "matched_by": e["matched_by"], "extra": json.loads(e["extra"] or "{}"),
         } for e in con.execute("SELECT * FROM editions WHERE work_id=? ORDER BY format", (wid,))]
         out["related"] = [summary(x) for x in con.execute(
-            "SELECT w.* FROM work_links l JOIN works w ON w.id=l.b WHERE l.a=? AND (w.adult=0 OR ?)",
+            f"SELECT w.* FROM work_links l JOIN {W} w ON w.id=l.b WHERE l.a=? AND (w.adult=0 OR ?)",
             (wid, int(adult_ok)))]
         out["series_works"] = []
         if r["series"]:
             out["series_works"] = [summary(x) for x in con.execute(
-                "SELECT * FROM works WHERE series_key=? AND kind=? AND hidden=0 ORDER BY series_index NULLS LAST, sort_title",
+                f"SELECT * FROM {W} WHERE series_key=? AND kind=? AND hidden=0 ORDER BY series_index NULLS LAST, sort_title",
                 (r["series_key"], r["kind"]))]
         out["universe_works"] = []
         if r["universe"]:
             out["universe_works"] = [summary(x) for x in con.execute(
-                "SELECT * FROM works WHERE universe=? AND hidden=0 ORDER BY universe_index NULLS LAST, sort_title",
+                f"SELECT * FROM {W} WHERE universe=? AND hidden=0 ORDER BY universe_index NULLS LAST, sort_title",
                 (r["universe"],))]
         return out
     finally:

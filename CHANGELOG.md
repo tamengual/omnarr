@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0 — 2026-10-03
+
+**Accounts, sharing and files.** One release covering what was planned as 0.3 and 0.4.
+
+- **Multiple accounts.** Each person signs in with their own username and password.
+  Upgrading is seamless: your existing password becomes the `admin` account, and every
+  signed-in browser stays signed in.
+- **Roles and permissions.** Admins manage connections, users and the library. Members get
+  switches: *can request downloads*, *can save files to their device*, *can upload*, and
+  *private section*. A guest (everything off) can browse and play but can't make the server
+  download anything.
+- **Invitations.** Create a single-use sign-up link that carries the permissions it grants.
+  Copy it and text it, or have Omnarr email it (new optional *Email* connection: any SMTP
+  server, Gmail with an app password).
+- **Per-person progress.** "Continue", In progress and Finished are each person's own, read
+  from their own Jellyfin user and Audiobookshelf API key (Settings → My account). Members
+  who haven't linked theirs see no progress, never the owner's.
+- **Playback writes to your own accounts.** Without a linked account, playback still works
+  but nothing is saved, and the player says so.
+- **Private section per person.** Each person has their own PIN, and admins choose who can use it.
+- **Save to device.** Download the original file of anything you can see: an ebook (any
+  Calibre format), a read-along EPUB, an audiobook, a comic, a movie or a game.
+- **Uploads.** People with permission can upload ebooks, comics and audiobooks to drop-off
+  folders an admin chooses (e.g. the Calibre-Web-Automated ingest and an Audiobookshelf
+  library). There are type and size limits, and every upload is logged.
+- **Home Assistant:** each HA user gets their own Omnarr account automatically. The first one
+  becomes admin.
+- The Activity log records who did what: requests, downloads, uploads and account changes.
+
 ## 0.2.5 — 2026-10-03
 
 - **Requested comics go to Komga.** The comic format now only accepts comic archives

@@ -22,3 +22,8 @@ services:
       # - /path/to/storyteller/data:/src/storyteller:ro        # Storyteller: folder with storyteller.db
       # - /path/to/storyteller/library:/src/storyteller-library:ro
       # - /path/to/bookbridge:/src/bookbridge:ro               # BookBridge: folder with database.db
+
+      # ── Optional: upload drop-off folders (the only places Omnarr writes) ──
+      # Set them in Settings → Uploads after mounting. Leave out to keep uploads off.
+      # - /path/to/cwa-book-ingest:/uploads/books              # ebooks and comics
+      # - /path/to/audiobookshelf/library:/uploads/audiobooks  # one folder per uploaded audiobook

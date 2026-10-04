@@ -52,6 +52,8 @@ CREATE VIRTUAL TABLE works_fts USING fts5(
   id UNINDEXED, title, authors, narrators, series, description, genres,
   tokenize = 'unicode61 remove_diacritics 2');
 CREATE INDEX ix_ed_work ON editions(work_id);
+CREATE TABLE user_progress (account_id INTEGER, work_id TEXT, progress REAL, status TEXT, last_activity TEXT,
+  PRIMARY KEY (account_id, work_id));
 CREATE INDEX ix_works_kind ON works(kind);
 CREATE INDEX ix_links_a ON work_links(a);
 """
@@ -447,6 +449,14 @@ def run(cfg):
             u.progress, int(u.finished), int(u.hidden), u.library, J(u.narrators), how,
             J({**u.extra, "ids": u.ids, "authors": u.authors, "series": u.series,
                "series_index": u.series_index, "year": u.year})))
+    try:                                         # each person's own progress (progress.py)
+        from . import progress as progress_mod
+        prows = progress_mod.build(cfg, cfg.get("index.state", "/data/state.db"), editions)
+        con.executemany("INSERT OR REPLACE INTO user_progress VALUES (?,?,?,?,?)", prows)
+        counts["progress_rows"] = len(prows)
+    except Exception as e:
+        log.warning("per-person progress failed: %s", e, exc_info=True)
+        errors["progress"] = f"{type(e).__name__}: {e}"
     for a, b in wlinks:
         con.execute("INSERT INTO work_links VALUES (?,?,?)", (a, b, "adaptation"))
         con.execute("INSERT INTO work_links VALUES (?,?,?)", (b, a, "adaptation"))

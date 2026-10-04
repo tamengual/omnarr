@@ -36,6 +36,7 @@ window.OmnarrPlayer = (() => {
       </div>
       <div class="player-countdown" hidden><span id="video-countdown" role="status"></span><button type="button" class="text-button" id="video-cancel-next">Cancel auto-play</button></div>
       <p class="player-message" id="video-message" role="status" aria-live="polite"></p>
+      <p class="hint player-sync-note" id="video-sync-note" hidden>Progress isn't saved — link your accounts in Settings → My account.</p>
     </dialog>
     <section id="audio-dock" class="audio-dock" aria-label="Audiobook mini-player" hidden>
       <button type="button" class="audio-dock-info" id="audio-expand" aria-label="Expand audiobook player" aria-controls="audio-sheet" aria-expanded="false"><img id="audio-mini-cover" alt="" hidden><span><strong id="audio-mini-title">Audiobook</strong><small id="audio-mini-chapter">Loading…</small></span></button>
@@ -56,6 +57,7 @@ window.OmnarrPlayer = (() => {
           <label class="audio-volume">Volume<input id="audio-volume" type="range" min="0" max="1" step="0.05" aria-label="Audiobook volume"></label>
         </div>
         <p id="audio-sleep-status" class="hint" role="status"></p><p id="audio-message" class="player-message" role="status" aria-live="polite"></p>
+        <p class="hint player-sync-note" id="audio-sync-note" hidden>Progress isn't saved — link your accounts in Settings → My account.</p>
         <details class="audio-chapters" open><summary>Chapters</summary><ol id="audio-chapters"></ol></details>
         <button type="button" class="text-button" data-audio-close>Close audiobook player</button>
       </div>
@@ -73,10 +75,7 @@ window.OmnarrPlayer = (() => {
   if (detail) new MutationObserver(mountDock).observe(detail, { attributes: true, attributeFilter: ["open"] });
 
   async function getInfo(type, id, signal) {
-    const response = await fetch(`api/play/${type}/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store", signal });
-    if (response.status === 401) throw new Error("Your session expired. Sign in again to play this item.");
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "This item could not be loaded. Try again.");
+    const data = await api(`api/play/${type}/${encodeURIComponent(id)}`, { cache: "no-store", signal });
     if (data.type !== type || !data.item_id) throw new Error("Playback details are incomplete. Try again.");
     return data;
   }
@@ -105,8 +104,7 @@ window.OmnarrPlayer = (() => {
       if (version < (state.lastSent || 0)) return;
       state.lastSent = version;
       try {
-        const response = await fetch("api/play/progress", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive });
-        if (!response.ok) throw new Error(response.status === 401 ? "Session expired. Sign in again to save your place." : "Your place could not be saved. We’ll retry while you listen or watch.");
+        await api("api/play/progress", { method: "POST", body: JSON.stringify(payload), keepalive });
         const target = $(state.type === "audio" ? "#audio-message" : "#video-message");
         if (target.dataset.sync) message(state, "", true);
       } catch (error) { message(state, error.message || "Your place could not be saved.", true); }
@@ -119,7 +117,7 @@ window.OmnarrPlayer = (() => {
 
   function stopSession(data) {
     if (!data?.play_session_id) return;
-    void fetch("api/play/stop", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ play_session_id: data.play_session_id }), keepalive: true }).catch(() => {});
+    void api("api/play/stop", { method: "POST", body: JSON.stringify({ play_session_id: data.play_session_id }), keepalive: true }).catch(() => {});
   }
 
   function preferences(media, type) {
@@ -204,6 +202,7 @@ window.OmnarrPlayer = (() => {
     state.episodes = [...episodes];
     $("#video-title").textContent = "Loading video…";
     $("#video-message").textContent = "";
+    $("#video-sync-note").hidden = true;
     $("#video-message").dataset.sync = "";
     $("#video-subtitles").replaceChildren(new Option("Off", "off"));
     $("#video-next").hidden = true;
@@ -246,6 +245,7 @@ window.OmnarrPlayer = (() => {
       const data = await getInfo("video", id);
       if (request !== videoRequest) { stopSession(data); return; }
       state.data = data;
+      $("#video-sync-note").hidden = data.progress_sync !== false;
       state.position = clamp(data.resume, data.duration);
       if (!data.url || !["direct", "hls"].includes(data.mode)) throw new Error("No supported video stream is available.");
       $("#video-title").textContent = data.title || "Video";
@@ -397,6 +397,7 @@ window.OmnarrPlayer = (() => {
     $("#audio-volume").value = volume;
     $("#audio-chapters").replaceChildren();
     for (const image of [$("#audio-cover"), $("#audio-mini-cover")]) { image.hidden = true; image.removeAttribute("src"); }
+    $("#audio-sync-note").hidden = true;
     document.querySelectorAll(".audio-toggle").forEach((button) => { button.disabled = true; button.textContent = "Play"; });
     expandAudio();
     preferences(media, "audio");
@@ -452,6 +453,7 @@ window.OmnarrPlayer = (() => {
       data.tracks = [...data.tracks].sort((a, b) => number(a.offset) - number(b.offset));
       data.chapters = [...(data.chapters || [])].sort((a, b) => number(a.start) - number(b.start));
       state.data = data;
+      $("#audio-sync-note").hidden = data.progress_sync !== false;
       $("#audio-title").textContent = $("#audio-mini-title").textContent = data.title || "Audiobook";
       for (const image of [$("#audio-cover"), $("#audio-mini-cover")]) {
         image.hidden = !data.cover;

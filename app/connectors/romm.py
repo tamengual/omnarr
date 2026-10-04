@@ -64,7 +64,7 @@ def read(cfg):
                     library=plat, rating=(meta.get("average_rating") / 20.0) if meta.get("average_rating") else None,
                     ids={k: str(g[k]) for k in ("igdb_id", "ss_id", "ra_id") if g.get(k)},
                     extra={"platform": plat, "platform_slug": g.get("platform_slug") or "",
-                           "size": g.get("fs_size_bytes"), "cover_path": cover},
+                           "size": g.get("fs_size_bytes"), "cover_path": cover, "fs_name": g.get("fs_name") or ""},
                 ))
             offset += len(items)
             if not items or (total is not None and offset >= total) or (total is None and len(items) < page):

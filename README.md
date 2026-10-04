@@ -38,9 +38,15 @@ Omnarr is the front end.
 - **Play in the browser.** Video plays from Jellyfin (direct or transcoded HLS), and audiobooks
   from Audiobookshelf with chapters. Progress is saved back to the owning app.
   App credentials never reach the browser.
-- **An optional private section** (Stash, adult Jellyfin libraries), off by default and PIN-locked when on.
+- **Share it.** Give family and friends their own accounts with exactly the permissions you
+  choose: request things, save files to their own device, upload, and the private section.
+  Invite them with a link you text or email. Everyone's progress is their own.
+- **Save and upload.** Download the original ebook, read-along, audiobook, comic, movie or
+  game. People you allow can upload their own books and audiobooks to drop-off folders you choose.
+- **An optional private section** (Stash, adult Jellyfin libraries), off by default and PIN-locked, with a PIN per person.
 - **Read-only by design.** Omnarr never writes to another app's files. Changes go through
-  each app's own API, and every change is logged on the Activity page.
+  each app's own API, and every change is logged on the Activity page. The only exception
+  is the upload folders, and only if you set them.
 
 ## How it fits in
 
@@ -95,7 +101,7 @@ docker compose up -d
 
 Open `http://your-server:8765`, then:
 
-1. Choose a password.
+1. Create the admin account (a username and password).
 2. **Settings → Connections:** for each app you use, enter its address and API key, then press **Test**.
 3. Omnarr builds its index (about a minute) and rebuilds it every 15 minutes.
 
@@ -140,6 +146,37 @@ On Home Assistant OS or Supervised, add the add-on repository
 `https://github.com/tamengual/omnarr-ha` under **Settings → Add-ons → Add-on store → ⋮ →
 Repositories**, then install **Omnarr**. It opens from the sidebar, and you're signed in
 through Home Assistant. See the [add-on docs](https://github.com/tamengual/omnarr-ha/blob/main/omnarr/DOCS.md).
+
+## Users, sharing and permissions
+
+The first account (created on first run) is an **admin**. Admins add people in
+**Settings → Users**, or send an **invitation link** (copy it, or let Omnarr email it once
+you've connected an *Email* server in Connections).
+
+| Switch | What it allows |
+|---|---|
+| Can request downloads | Requests and searches that make your server download things (Seerr, books, games, Sonarr/Radarr actions) |
+| Can save files to their device | Downloading the original ebook, audiobook, comic, movie or game |
+| Can upload files | Uploading their own books and audiobooks to your drop-off folders |
+| Private section | Using the PIN-locked private section (each person sets their own PIN) |
+
+With every switch off, a person is a **guest**: they can browse and play, and that's all.
+
+**Their own progress:** each person links their own Jellyfin user and Audiobookshelf API key
+in **Settings → My account**. Playback progress is then saved to *their* accounts, and their
+"Continue" row is theirs. Until they link them, they can still play, but nothing is saved.
+
+**Uploads** need writable folders. Mount them into the container and set them in Settings:
+
+```yaml
+    volumes:
+      - /path/to/cwa-book-ingest:/uploads/books          # ebooks and comics
+      - /path/to/audiobookshelf/library:/uploads/audiobooks
+```
+
+**Sharing outside your home network:** Omnarr has no built-in remote access. Put it behind
+something that does: a VPN such as Tailscale (sharing just Omnarr with someone's own
+Tailscale account is the simplest safe option), or a reverse proxy with HTTPS.
 
 ### Security notes
 

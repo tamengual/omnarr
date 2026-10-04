@@ -719,3 +719,65 @@ dialog::backdrop { background: rgba(6, 10, 14, .72); backdrop-filter: blur(4px);
 
 .related-book-request { grid-column: 1 / -1; margin-top: 10px; }
 .related-book-request .request-card-actions { flex-wrap: wrap; }
+
+/* Accounts use the same quiet surfaces and form controls as Connections. */
+.signed-in-user { display: block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.account-form { display: grid; gap: 14px; min-width: 0; margin-top: 16px; }
+.account-form > button { justify-self: start; }
+.account-form .field, .account-form [data-permission-editor] { min-width: 0; }
+.account-form input, .account-form select { width: 100%; min-width: 0; min-height: 44px; }
+.account-form input[type="checkbox"] { width: 18px; min-height: 18px; flex: 0 0 auto; }
+.account-fields, .permission-switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.permission-switches { margin-top: 16px; }
+.permission-switches .check { align-items: start; }
+.permission-switches .hint { margin: 4px 0 0 26px; }
+.permission-presets { margin: 0 0 16px; }
+.accounts-list { display: grid; gap: 16px; }
+.account-card { min-width: 0; border-top: 1px solid var(--line); padding-top: 16px; overflow-wrap: anywhere; }
+.account-card h3 { margin: 0; font-size: 16px; }
+.account-create { border-block: 1px solid var(--line); margin-block: 24px; padding-block: 18px; }
+.account-create summary { cursor: pointer; font-weight: 700; }
+.account-form button, .invite-row button { min-height: 44px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.invites-list { list-style: none; padding: 0; margin: 14px 0 0; }
+.invite-row { display: flex; justify-content: space-between; align-items: start; gap: 12px; border-top: 1px solid var(--line); padding: 14px 0; overflow-wrap: anywhere; }
+.invite-row > div { min-width: 0; }
+.invite-row > button { flex: 0 0 auto; }
+.player-sync-note { margin: 12px 18px; overflow-wrap: anywhere; }
+.audio-sheet .player-sync-note { margin-inline: 0; }
+#upload-open { display: inline-flex; }
+.save-editions { display: grid; gap: 10px; }
+.save-edition { display: flex; align-items: start; justify-content: space-between; gap: 14px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 4px 4px 12px 4px; background: var(--bg-raised); }
+.save-edition-copy { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.save-edition-copy strong { font-size: 13px; }
+.save-edition-copy small { font-size: 11px; color: var(--muted); }
+.save-edition .secondary-button, .save-formats summary { display: inline-flex; align-items: center; min-height: 44px; font-size: 12px; text-decoration: none; }
+.save-edition > .secondary-button { flex: 0 0 auto; }
+.save-formats { flex: 0 0 auto; max-width: 100%; }
+.save-formats summary { display: list-item; padding: 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.save-format-links { display: flex; flex-wrap: wrap; gap: 8px; max-width: 230px; margin-top: 8px; }
+.upload-dialog { width: min(520px, calc(100vw - 32px)); height: auto; max-height: calc(100svh - 32px); overflow-y: auto; padding: 22px; border: 1px solid var(--line); border-radius: 4px 4px 22px 4px; }
+.upload-dialog h2 { margin: 0; }
+.upload-dialog .hint, .upload-dialog .connection-message { overflow-wrap: anywhere; }
+.upload-drop { border: 2px dashed var(--line-strong); border-radius: 12px; padding: 16px; background: var(--bg-raised); }
+.upload-drop p { margin-top: 0; font-size: 13px; }
+.upload-drop.is-dragging { border-color: var(--accent); background: var(--panel-2); }
+.upload-drop input { width: 100%; min-width: 0; min-height: 44px; padding: 6px; }
+.upload-drop input::file-selector-button { min-height: 36px; margin-right: 8px; cursor: pointer; }
+.upload-file-list { list-style: none; padding: 0; margin: 14px 0; }
+.upload-file-list:empty { display: none; }
+.upload-file-list li { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 12px; }
+.upload-file-list .is-error { color: var(--danger, #c54639); }
+#upload-form > button { min-height: 44px; }
+#upload-options-form { max-width: 560px; }
+#upload-options-form .field, #upload-options-form input { min-width: 0; }
+@media (max-width: 620px) {
+  .header-actions { gap: 4px; }
+  .header-actions:has(#upload-open:not([hidden])) .signed-in-user { display: none; }
+  .save-edition { flex-direction: column; gap: 10px; }
+  .upload-dialog { padding: 18px; }
+  .upload-drop { padding: 12px; }
+  .signed-in-user { max-width: 60px; font-size: 11px; }
+  .account-fields, .permission-switches { grid-template-columns: minmax(0, 1fr); }
+  .account-form input, .account-form select, .password-form input { font-size: 16px; }
+  .account-form .connection-actions { gap: 8px; }
+}

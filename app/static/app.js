@@ -50,6 +50,14 @@ let params = publicParams(location.hash.slice(1));
 let offset = 0;
 let runSequence = 0;
 let setupMode = false;
+let inviteToken = new URLSearchParams(location.hash.slice(1)).get("invite") || "";
+let inviteReady = false;
+let currentUser = null;
+let permissions = {};
+const isAdmin = () => currentUser?.role === "admin";
+const canRequest = () => isAdmin() || permissions.can_request === true;
+const REQUEST_HINT = "Your account can browse and play. Ask an admin to request things.";
+const requestHint = () => `<p class="hint permission-hint">${REQUEST_HINT}</p>`;
 let privateMode = false;
 let publicState = new URLSearchParams(params);
 let viewEpoch = 0;
@@ -105,7 +113,7 @@ function clearView() {
 }
 
 function updatePrivateChrome() {
-  $("#private-toggle").hidden = !adultStatus.enabled;
+  $("#private-toggle").hidden = !adultStatus.enabled || !adultStatus.allowed;
   $("#private-toggle").setAttribute("aria-pressed", String(privateMode));
   $("#private-banner").hidden = !privateMode;
   document.body.classList.toggle("private-mode", privateMode);
@@ -151,16 +159,16 @@ function enterPrivate() {
 
 // PIN failures belong to this dialog, never to the main login screen.
 async function adultApi(action, pin) {
-  const response = await fetch(`api/adult/${action}`, {
-    method: action === "status" ? "GET" : "POST", credentials: "same-origin", cache: "no-store",
-    signal: AbortSignal.timeout(10000),
-    headers: { "Content-Type": "application/json" },
-    ...(pin === undefined ? {} : { body: JSON.stringify({ pin }) }),
-  });
-  if (action === "status" && response.status === 404) return { enabled: false };
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || body.error || `Couldn’t ${action} Private (${response.status}).`);
-  return body;
+  try {
+    return await api(`api/adult/${action}`, {
+      method: action === "status" ? "GET" : "POST", cache: "no-store", authRequest: true,
+      signal: AbortSignal.timeout(10000),
+      ...(pin === undefined ? {} : { body: JSON.stringify({ pin }) }),
+    });
+  } catch (error) {
+    if (action === "status" && error.status === 404) return { enabled: false, allowed: false };
+    throw error;
+  }
 }
 
 async function checkAdultStatus() {
@@ -168,7 +176,7 @@ async function checkAdultStatus() {
   try {
     const status = await adultApi("status");
     if (sequence !== adultStatusSequence) return false;
-    adultStatus = { ...status, enabled: adultEnabled && Boolean(status.enabled) };
+    adultStatus = { ...status, enabled: adultEnabled && Boolean(status.enabled) && Boolean(status.allowed) };
     if (privateMode && !privateUnlocked()) leavePrivate(status.enabled ? "Private collection locked." : "");
     updatePrivateChrome();
     if (!adultStatus.enabled) { $("#private-dialog").close(); privateNotice(); }
@@ -260,14 +268,14 @@ const safeUrl = (value) => {
 };
 
 async function api(path, options = {}) {
-  const { privateRequest = false, ...fetchOptions } = options;
+  const { privateRequest = false, authRequest = false, ...fetchOptions } = options;
   const epoch = viewEpoch;
   const response = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
+    headers: options.body instanceof FormData ? {} : { "Content-Type": "application/json" },
     ...fetchOptions,
   });
-  if (response.status === 401) {
+  if (response.status === 401 && !authRequest) {
     if (privateRequest) {
       if (epoch === viewEpoch && privateMode) {
         adultStatus.unlocked = false;
@@ -289,7 +297,7 @@ async function api(path, options = {}) {
 
 function setupPasswordSection(status) {
   const viaHA = Boolean(status.ha_ingress);
-  const hasPassword = Boolean(status.has_password);
+  const hasPassword = Boolean(status.user?.has_password ?? status.has_password);
   // Inside Home Assistant you're already signed in, so the current password is never asked for.
   $("#settings-password-current-field").hidden = viaHA || !hasPassword;
   $("#settings-password-help").textContent = viaHA
@@ -297,6 +305,7 @@ function setupPasswordSection(status) {
                    : "Only needed if you open Omnarr's own port directly (add-on Network settings). Until you set one, direct sign-in stays closed.")
     : "The password for signing in to Omnarr.";
   const form = $("#settings-password-form");
+  form.dataset.viaHa = String(viaHA);
   if (form.dataset.bound) return;
   form.dataset.bound = "1";
   form.addEventListener("submit", async (event) => {
@@ -315,7 +324,7 @@ function setupPasswordSection(status) {
     try {
       await api("api/auth/password", { method: "POST", body: JSON.stringify({ current: $("#settings-password-current").value, new: next }) });
       form.reset();
-      $("#settings-password-current-field").hidden = viaHA;
+      $("#settings-password-current-field").hidden = form.dataset.viaHa === "true";
       message.textContent = "Password saved.";
       message.className = "connection-message is-success";
     } catch (error) {
@@ -330,14 +339,19 @@ function setupPasswordSection(status) {
 
 async function boot() {
   try {
-    const status = await (await fetch("api/auth/status", { credentials: "same-origin" })).json();
+    if (inviteToken) return await showInvitation();
+    const status = await api("api/auth/status", { authRequest: true, cache: "no-store" });
     if (!status.logged_in) return showAuth(status.setup_needed);
+    currentUser = status.user;
+    permissions = status.permissions || {};
+    adultStatus.allowed = Boolean(status.adult_allowed);
+    applyAccountChrome();
     $("#auth").hidden = true;
     $("#app").hidden = false;
     $("#logout").hidden = Boolean(status.ha_ingress);          // signed in through Home Assistant
     setupPasswordSection(status);
     applyAdultOption(Boolean(status.adult_enabled));
-    settingsWelcome = Boolean(status.connections_needed);
+    settingsWelcome = isAdmin() && Boolean(status.connections_needed);
     if (settingsWelcome) params = new URLSearchParams({ view: "settings" });
     const wantsPrivate = new URLSearchParams(location.hash.slice(1)).get("private") === "1";
     await checkAdultStatus();
@@ -355,6 +369,9 @@ async function boot() {
 
 function showAuth(setup, error = "") {
   stopSettings();
+  currentUser = null;
+  permissions = {};
+  resetUpload();
   adultEnabled = false;
   window.OmnarrPlayer?.closeAll();
   ++gateSequence;
@@ -364,43 +381,71 @@ function showAuth(setup, error = "") {
   adultStatus = { enabled: false, unlocked: false, until: 0 };
   updatePrivateChrome();
   $("#private-dialog").close();
-  writeHistory(true);
+  if (!inviteToken) writeHistory(true);
   setupMode = Boolean(setup);
   if ($("#detail")?.open) $("#detail").close();
   closeFilters();
   $("#app").hidden = true;
   $("#auth").hidden = false;
-  $("#auth-confirm").hidden = !setupMode;
-  $("#auth-pw2").required = setupMode;
-  $("#auth-pw").autocomplete = setupMode ? "new-password" : "current-password";
-  $("#auth-msg").textContent = setupMode ? "First run: create your Omnarr password." : "Sign in to browse your library.";
-  $("#auth-btn").textContent = setupMode ? "Create password" : "Sign in";
+  const creating = setupMode || Boolean(inviteToken);
+  $("#auth-confirm").hidden = !creating;
+  $("#auth-pw2").required = creating;
+  $("#auth-pw").autocomplete = creating ? "new-password" : "current-password";
+  $("#auth-pw").minLength = creating ? 8 : 1;
+  if (setupMode) $("#auth-username").value = "admin";
+  $("#auth-msg").textContent = setupMode ? "First run: create your Omnarr admin account." : "Sign in to browse your library.";
+  $("#auth-btn").textContent = creating ? "Create account" : "Sign in";
+  $("#auth-btn").disabled = false;
   $("#auth-err").textContent = error;
-  $("#auth-pw").focus();
+  $("#auth-username").focus();
+}
+
+async function showInvitation() {
+  showAuth(false);
+  inviteReady = false;
+  $("#auth-btn").disabled = true;
+  $("#auth-msg").textContent = "Checking your invitation…";
+  try {
+    const invite = await api(`api/auth/invite/${encodeURIComponent(inviteToken)}`, { authRequest: true, cache: "no-store" });
+    $("#auth-msg").textContent = `${invite.invited_by} invited you to Omnarr. Create your account to browse and play. Invitation expires ${new Date(invite.expires * 1000).toLocaleString()}.`;
+    inviteReady = true;
+    $("#auth-btn").disabled = false;
+  } catch (error) {
+    $("#auth-msg").textContent = "This invitation could not be opened.";
+    $("#auth-err").textContent = error.message;
+  }
 }
 
 $("#auth-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (inviteToken && !inviteReady) return;
   const password = $("#auth-pw").value;
   $("#auth-err").textContent = "";
-  if (setupMode && password !== $("#auth-pw2").value) {
+  if ((setupMode || inviteToken) && password !== $("#auth-pw2").value) {
     $("#auth-err").textContent = "Those passwords don’t match.";
     return;
   }
   $("#auth-btn").disabled = true;
   try {
-    await api(setupMode ? "api/auth/setup" : "api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    const path = inviteToken ? `api/auth/invite/${encodeURIComponent(inviteToken)}` : setupMode ? "api/auth/setup" : "api/auth/login";
+    await api(path, { method: "POST", authRequest: true, body: JSON.stringify({ username: $("#auth-username").value.trim(), password }) });
+    if (inviteToken) {
+      inviteToken = "";
+      params = new URLSearchParams();
+      history.replaceState(null, "", `${location.pathname}${location.search}`);
+    }
     $("#auth-pw").value = "";
     $("#auth-pw2").value = "";
     await boot();
   } catch (error) {
-    $("#auth-err").textContent = error.message === "login" ? "That password wasn’t accepted." : error.message;
+    $("#auth-err").textContent = error.message;
   } finally {
     $("#auth-btn").disabled = false;
   }
 });
 
 function writeHistory(replace = false) {
+  if (inviteToken) return;
   const hash = privateMode ? "private=1" : params.toString();
   const url = hash ? `#${hash}` : `${location.pathname}${location.search}`;
   if (location.hash === (hash ? `#${hash}` : "")) return;
@@ -479,11 +524,18 @@ $("#reindex").addEventListener("click", async () => {
     await api("api/reindex", { method: "POST" });
     $("#index-status").textContent = "Refreshing your library…";
     setTimeout(refreshStatus, 3000);
+  } catch (error) {
+    if (error.message !== "login") $("#index-status").textContent = error.message;
   } finally { $("#reindex").disabled = false; }
 });
 
 window.addEventListener("popstate", () => {
   const hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.has("invite") || inviteToken) {
+    inviteToken = hash.get("invite") || "";
+    boot();
+    return;
+  }
   ++gateSequence;
   $("#private-dialog").close();
   if (privateMode) leavePrivate("", false);
@@ -496,7 +548,7 @@ window.addEventListener("popstate", () => {
   if (hash.get("private") === "1") openPrivate();
 });
 document.addEventListener("keydown", (event) => {
-  if ($("#video-player")?.open || $("#audio-sheet")?.open) return;
+  if ($("#video-player")?.open || $("#audio-sheet")?.open || $("#upload-dialog").open) return;
   if (event.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
     event.preventDefault();
     $("#q").focus();
@@ -789,7 +841,11 @@ function run() {
     closeFilters();
     $("#home-view").hidden = $("#results-view").hidden = true;
     $("#settings-welcome").hidden = !settingsWelcome;
-    if (!settingsController) loadConnections();
+    if (!settingsController) {
+      settingsController = new AbortController();
+      loadMyAccount();
+      if (isAdmin()) { loadConnections(); loadAccounts(); loadInvites(); }
+    }
     return;
   }
   stopSettings();
@@ -806,7 +862,392 @@ function run() {
   else runHome();
 }
 
+let uploadController;
+let uploadConfig;
+let uploadFiles = [];
+let uploadBusy = false;
+let uploadOptionsReady = false;
+
+function resetUpload() {
+  uploadController?.abort();
+  uploadController = null;
+  uploadConfig = null;
+  uploadFiles = [];
+  uploadBusy = false;
+  $("#upload-dialog").close();
+  $("#upload-form").reset();
+  $("#upload-form").hidden = true;
+  $("#upload-form").removeAttribute("aria-busy");
+  $("#upload-files").disabled = false;
+  $("#upload-submit").disabled = true;
+  $("#upload-selection").replaceChildren();
+  $("#upload-results").replaceChildren();
+  $("#upload-drop").classList.remove("is-dragging");
+  connectionMessage($("#upload-status"), "");
+}
+
+function uploadExtensions() {
+  if (!uploadConfig) return [];
+  return [...new Set([
+    ...(uploadConfig.books_enabled ? uploadConfig.types?.book || [] : []),
+    ...(uploadConfig.audio_enabled ? uploadConfig.types?.audio || [] : []),
+  ].map((type) => String(type).toLowerCase()))];
+}
+
+function selectUploadFiles(files) {
+  if (uploadBusy || !uploadConfig) return;
+  uploadFiles = [];
+  const types = uploadExtensions();
+  const limit = Number(uploadConfig.max_mb) * 1024 * 1024;
+  $("#upload-results").replaceChildren();
+  $("#upload-selection").innerHTML = [...files].map((file) => {
+    const extension = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
+    const error = !types.includes(extension) ? "This file type isn't enabled." : file.size > limit ? `Exceeds the ${uploadConfig.max_mb} MB limit.` : "";
+    if (!error) uploadFiles.push(file);
+    return `<li${error ? ' class="is-error"' : ""}><strong>${esc(file.name)}</strong><span>${esc(error || `${(file.size / 1024 / 1024).toFixed(1)} MB — ready`)}</span></li>`;
+  }).join("");
+  $("#upload-submit").disabled = !uploadFiles.length;
+  connectionMessage($("#upload-status"), uploadFiles.length ? `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"} ready to upload.` : "Choose supported files within the size limit.");
+}
+
+async function openUpload() {
+  if (permissions.can_upload !== true) return;
+  const dialog = $("#upload-dialog");
+  if (!dialog.open) dialog.showModal();
+  if (uploadBusy) return;
+  uploadController?.abort();
+  const controller = uploadController = new AbortController();
+  uploadConfig = null;
+  uploadFiles = [];
+  $("#upload-form").reset();
+  $("#upload-form").hidden = true;
+  $("#upload-submit").disabled = true;
+  $("#upload-selection").replaceChildren();
+  $("#upload-retry").hidden = true;
+  connectionMessage($("#upload-status"), "Checking upload folders…", "busy");
+  try {
+    const config = await api("api/upload", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
+    if (controller !== uploadController) return;
+    uploadConfig = config;
+    if (!config.books_enabled && !config.audio_enabled) {
+      connectionMessage($("#upload-status"), "Uploads aren't set up yet — ask an admin.");
+      return;
+    }
+    const types = uploadExtensions();
+    $("#upload-files").accept = types.map((type) => `.${type}`).join(",");
+    $("#upload-limit").textContent = `Maximum size: ${config.max_mb} MB per file.`;
+    $("#upload-types").textContent = `Accepted files: ${types.map((type) => type.toUpperCase()).join(", ")}.`;
+    $("#upload-form").hidden = false;
+    connectionMessage($("#upload-status"), "");
+  } catch (error) {
+    if (controller !== uploadController || error.message === "login") return;
+    connectionMessage($("#upload-status"), error.message, "error");
+    $("#upload-retry").hidden = false;
+  }
+}
+
+$("#upload-open").addEventListener("click", openUpload);
+$("#upload-retry").addEventListener("click", openUpload);
+$("#upload-close").addEventListener("click", () => $("#upload-dialog").close());
+$("#upload-files").addEventListener("change", (event) => selectUploadFiles(event.target.files));
+for (const name of ["dragenter", "dragover", "dragleave", "drop"]) {
+  $("#upload-drop").addEventListener(name, (event) => {
+    event.preventDefault();
+    $("#upload-drop").classList.toggle("is-dragging", !uploadBusy && ["dragenter", "dragover"].includes(name));
+    if (name === "drop" && !uploadBusy) {
+      $("#upload-files").value = "";
+      selectUploadFiles(event.dataTransfer.files);
+    }
+  });
+}
+$("#upload-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (permissions.can_upload !== true || uploadBusy || !uploadFiles.length) return;
+  const controller = uploadController;
+  const body = new FormData();
+  uploadFiles.forEach((file) => body.append("files", file));
+  uploadBusy = true;
+  $("#upload-files").disabled = true;
+  $("#upload-submit").disabled = true;
+  $("#upload-form").setAttribute("aria-busy", "true");
+  $("#upload-results").replaceChildren();
+  connectionMessage($("#upload-status"), "Uploading… You can close this dialog; keep Omnarr open until it finishes.", "busy");
+  try {
+    const result = await api("api/upload", { method: "POST", body, signal: controller.signal });
+    if (controller !== uploadController) return;
+    $("#upload-results").innerHTML = (result.results || []).map((item) => `<li class="${item.ok ? "is-success" : "is-error"}"><strong>${esc(item.file)}</strong><span>${item.ok ? "Uploaded" : "Failed"}: ${esc(item.message || "")}</span></li>`).join("");
+    const success = result.ok && (result.results || []).every((item) => item.ok);
+    connectionMessage($("#upload-status"), success ? "Upload complete." : "Some files could not be uploaded. Check the results below.", success ? "success" : "error");
+    uploadFiles = [];
+    $("#upload-form").reset();
+    $("#upload-selection").replaceChildren();
+  } catch (error) {
+    if (controller !== uploadController || error.message === "login") return;
+    connectionMessage($("#upload-status"), `${error.message}. Check the library before retrying; some files may have arrived.`, "error");
+  } finally {
+    if (controller === uploadController) {
+      uploadBusy = false;
+      $("#upload-files").disabled = false;
+      $("#upload-submit").disabled = !uploadFiles.length;
+      $("#upload-form").removeAttribute("aria-busy");
+    }
+  }
+});
+
+function fillUploadOptions(options) {
+  const form = $("#upload-options-form");
+  form.elements.upload_dir.value = options.upload_dir || "";
+  form.elements.upload_audio_dir.value = options.upload_audio_dir || "";
+  form.elements.upload_max_mb.value = options.upload_max_mb ?? 2048;
+}
+
+$("#upload-options-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!isAdmin() || settingsBusy || !settingsController || !uploadOptionsReady) return;
+  const form = event.currentTarget;
+  const controller = settingsController;
+  const values = { upload_dir: form.elements.upload_dir.value.trim(), upload_audio_dir: form.elements.upload_audio_dir.value.trim(), upload_max_mb: Number(form.elements.upload_max_mb.value) };
+  settingsPending(true);
+  connectionMessage($("#upload-options-message"), "Saving upload folders…", "busy");
+  try {
+    const result = await api("api/setup/options", { method: "POST", body: JSON.stringify(values), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
+    if (controller !== settingsController) return;
+    if (!result.ok) throw new Error("Upload folders were not saved.");
+    fillUploadOptions(result.options || values);
+    connectionMessage($("#upload-options-message"), "Upload settings saved.", "success");
+  } catch (error) {
+    if (controller !== settingsController || error.message === "login") return;
+    connectionMessage($("#upload-options-message"), error.message, "error");
+  } finally {
+    if (controller === settingsController) settingsPending(false);
+  }
+});
+
 // Connection drafts live only in these forms, never in navigation or storage.
+function applyAccountChrome() {
+  $("#signed-in-user").textContent = currentUser?.username || "";
+  $("#signed-in-user").title = currentUser?.username || "";
+  for (const id of ["settings-private", "settings-uploads", "settings-admin-connections", "settings-users", "reindex"]) $("#" + id).hidden = !isAdmin();
+  $("#upload-open").hidden = permissions.can_upload !== true;
+  if (permissions.can_upload !== true) resetUpload();
+}
+
+const ACCOUNT_PERMISSIONS = [
+  ["can_request", "Can request downloads", "Searches and downloads on your server: Seerr, books, games, Sonarr/Radarr actions"],
+  ["can_download", "Can save files to their device", "Save original library files to their device"],
+  ["can_upload", "Can upload files", "Add ebooks, comics, and audiobooks to configured folders"],
+  ["adult_allowed", "Private section", "They set their own PIN"],
+];
+
+function permissionEditor(prefix, account = {}, presets = false) {
+  return `${presets ? '<div class="connection-actions permission-presets"><button type="button" class="secondary-button" data-preset="family">Family (can request)</button><button type="button" class="secondary-button" data-preset="guest">Guest (view &amp; play only)</button></div>' : ""}
+    <label class="field">Role<select name="role"><option value="member"${account.role !== "admin" ? " selected" : ""}>Member</option><option value="admin"${account.role === "admin" ? " selected" : ""}>Admin</option></select></label>
+    <div class="permission-switches">${ACCOUNT_PERMISSIONS.map(([key, label, help]) => `<div><label class="check" for="${prefix}-${key}"><input id="${prefix}-${key}" name="${key}" type="checkbox" role="switch" aria-describedby="${prefix}-${key}-help"${account[key] ? " checked" : ""}><span>${label}</span></label><p id="${prefix}-${key}-help" class="hint">${help}</p></div>`).join("")}</div>
+    <p class="hint admin-permissions-help"${account.role === "admin" ? "" : " hidden"}>Admins can request, save, and upload. Private access keeps its per-person setting.</p>`;
+}
+
+function syncPermissionEditor(root) {
+  const admin = $('[name="role"]', root).value === "admin";
+  ACCOUNT_PERMISSIONS.forEach(([key]) => {
+    const input = $(`[name="${key}"]`, root);
+    input.disabled = admin;
+    if (admin && key !== "adult_allowed") input.checked = true;
+  });
+  $(".admin-permissions-help", root).hidden = !admin;
+}
+
+function bindPermissionEditor(root) {
+  $('[name="role"]', root).addEventListener("change", () => syncPermissionEditor(root));
+  $$("[data-preset]", root).forEach((button) => button.addEventListener("click", () => {
+    $('[name="role"]', root).value = "member";
+    ACCOUNT_PERMISSIONS.forEach(([key]) => { $(`[name="${key}"]`, root).checked = key === "can_request" && button.dataset.preset === "family"; });
+    syncPermissionEditor(root);
+  }));
+  syncPermissionEditor(root);
+}
+
+function accountPermissions(root) {
+  return { role: $('[name="role"]', root).value, ...Object.fromEntries(ACCOUNT_PERMISSIONS.map(([key]) => [key, $(`[name="${key}"]`, root).checked])) };
+}
+
+// Each settings visit owns its requests; leaving it discards unsaved credentials.
+async function accountOperation(root, message, task) {
+  const controller = settingsController;
+  if (!controller || root.dataset.busy) return;
+  root.dataset.busy = "1";
+  const controls = $$("input, select, button", root).map((control) => [control, control.disabled]);
+  controls.forEach(([control]) => { control.disabled = true; });
+  connectionMessage(message, "Saving…", "busy");
+  const current = () => settingsController === controller && root.isConnected;
+  try { await task(controller.signal, current); }
+  catch (error) { if (current() && error.message !== "login") connectionMessage(message, error.message, "error"); }
+  finally {
+    delete root.dataset.busy;
+    controls.forEach(([control, disabled]) => { control.disabled = disabled; });
+  }
+}
+
+async function loadMyAccount() {
+  const controller = settingsController;
+  if (!controller) return;
+  const form = $("#my-account-form");
+  $$("input, button[type=submit]", form).forEach((control) => { control.disabled = true; });
+  $("#account-retry").hidden = true;
+  connectionMessage($("#account-message"), "Loading your account…", "busy");
+  try {
+    const account = await api("api/me", { signal: controller.signal, cache: "no-store" });
+    if (controller !== settingsController) return;
+    $('[name="jellyfin_user"]', form).value = account.jellyfin_user || "";
+    $('[name="abs_api_key"]', form).value = account.abs_api_key || "";
+    $("#account-identity").hidden = !isAdmin() || !account.uses_server_identity;
+    $$("input, button[type=submit]", form).forEach((control) => { control.disabled = false; });
+    connectionMessage($("#account-message"), "");
+  } catch (error) {
+    if (controller !== settingsController) return;
+    connectionMessage($("#account-message"), error.message, "error");
+    $("#account-retry").hidden = false;
+  }
+}
+
+$("#account-retry").addEventListener("click", loadMyAccount);
+$("#my-account-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = { jellyfin_user: $('[name="jellyfin_user"]', form).value.trim(), abs_api_key: $('[name="abs_api_key"]', form).value.trim() };
+  accountOperation(form, $("#account-message"), async (signal, current) => {
+    const result = await api("api/me", { method: "POST", body: JSON.stringify(payload), signal });
+    if (!current()) return;
+    $('[name="abs_api_key"]', form).value = result.account.abs_api_key || "";
+    $('[name="jellyfin_user"]', form).value = result.account.jellyfin_user || "";
+    await loadMyAccount();
+    if (current()) connectionMessage($("#account-message"), result.message || "Account saved.", "success");
+  });
+});
+
+async function loadAccounts() {
+  const controller = settingsController;
+  if (!controller || !isAdmin()) return;
+  connectionMessage($("#users-message"), "Loading users…", "busy");
+  try {
+    const data = await api("api/accounts", { signal: controller.signal, cache: "no-store" });
+    if (controller !== settingsController) return;
+    const list = $("#accounts-list");
+    list.innerHTML = (data.accounts || []).map((account) => `<article class="account-card"><h3>${esc(account.username)}${account.id === currentUser.id ? " (you)" : ""}</h3><form class="account-form" data-account-id="${esc(account.id)}">
+      <label class="field">Username<input name="username" value="${esc(account.username)}" autocomplete="off" required></label>
+      ${permissionEditor(`account-${account.id}`, account)}
+      <div class="connection-actions"><button class="primary-button" type="submit">Save changes</button><button class="secondary-button" type="button" data-account-action="password">Reset password</button><button class="secondary-button" type="button" data-account-action="pin"${account.pin_set ? "" : " disabled"}>Clear PIN</button><button class="text-button" type="button" data-account-action="delete"${account.id === currentUser.id ? ' disabled title="You cannot delete your own account"' : ""}>Delete</button></div>
+      <p class="connection-message" role="status" aria-live="polite"></p></form></article>`).join("");
+    $$("form", list).forEach((form) => {
+      bindPermissionEditor(form);
+      const account = data.accounts.find((item) => String(item.id) === form.dataset.accountId);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        saveAccount(form, account, { username: $('[name="username"]', form).value.trim(), ...accountPermissions(form) });
+      });
+      $$("[data-account-action]", form).forEach((button) => button.addEventListener("click", () => {
+        const action = button.dataset.accountAction;
+        if (action === "delete") {
+          if (confirm(`Delete ${account.username}'s account? They will no longer be able to sign in.`)) saveAccount(form, account, null);
+        } else if (action === "pin") {
+          saveAccount(form, account, { clear_pin: true });
+        } else {
+          const password = prompt(`New password for ${account.username} (8+ characters):`);
+          if (password === null) return;
+          if (password.length < 8) { connectionMessage($(".connection-message", form), "Use a password with at least 8 characters.", "error"); return; }
+          saveAccount(form, account, { password });
+        }
+      }));
+    });
+    connectionMessage($("#users-message"), "");
+  } catch (error) { if (controller === settingsController) connectionMessage($("#users-message"), error.message, "error"); }
+}
+
+function saveAccount(form, account, payload) {
+  accountOperation(form, $(".connection-message", form), async (signal, current) => {
+    const result = await api(`api/accounts/${encodeURIComponent(account.id)}`, { method: payload === null ? "DELETE" : "PATCH", ...(payload === null ? {} : { body: JSON.stringify(payload) }), signal });
+    if (!current()) return;
+    if (account.id === currentUser.id) {
+      currentUser = result.account;
+      permissions = result.account;
+      adultStatus.allowed = Boolean(currentUser.adult_allowed);
+      applyAccountChrome();
+      await checkAdultStatus();
+      if (!isAdmin()) { stopSettings(); run(); return; }
+    }
+    await loadAccounts();
+    if (settingsController?.signal === signal) {
+      connectionMessage($("#users-message"), payload === null ? "User deleted." : "User saved.", "success");
+      $("#users-refresh").focus();
+    }
+  });
+}
+
+async function loadInvites() {
+  const controller = settingsController;
+  if (!controller || !isAdmin()) return;
+  connectionMessage($("#invites-message"), "Loading invitations…", "busy");
+  try {
+    const data = await api("api/accounts/invites", { signal: controller.signal, cache: "no-store" });
+    if (controller !== settingsController) return;
+    $("#invite-email-help").hidden = Boolean(data.email_enabled);
+    const list = $("#invites-list");
+    list.innerHTML = (data.invites || []).map((invite) => `<li class="invite-row"><div><strong>${esc(invite.note || invite.email || "Invitation")}</strong>${invite.note && invite.email ? `<p class="hint">${esc(invite.email)}</p>` : ""}<p class="hint">${esc(invite.status)} · Expires ${esc(new Date(invite.expires * 1000).toLocaleString())}${invite.used_by != null ? ` · Used by ${esc(invite.used_by)}` : ""}</p></div>${invite.status === "pending" ? `<button class="text-button" type="button" data-revoke="${esc(invite.id)}" aria-label="Revoke invitation ${esc(invite.note || invite.email || invite.id)}">Revoke</button>` : ""}</li>`).join("") || '<li class="hint">No invitations yet.</li>';
+    $$("[data-revoke]", list).forEach((button) => button.addEventListener("click", () => {
+      accountOperation(button.closest("li"), $("#invites-message"), async (signal, current) => {
+        await api(`api/accounts/invites/${encodeURIComponent(button.dataset.revoke)}`, { method: "DELETE", signal });
+        if (current()) { await loadInvites(); $("#invites-refresh").focus(); }
+      });
+    }));
+    connectionMessage($("#invites-message"), "");
+  } catch (error) { if (controller === settingsController) connectionMessage($("#invites-message"), error.message, "error"); }
+}
+
+$$("[data-permission-editor]").forEach((root) => {
+  root.innerHTML = permissionEditor(root.dataset.permissionEditor, { role: "member", can_request: true }, true);
+  bindPermissionEditor(root);
+});
+$("#users-refresh").addEventListener("click", loadAccounts);
+$("#invites-refresh").addEventListener("click", loadInvites);
+$("#create-account-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = { username: $('[name="username"]', form).value.trim(), password: $('[name="password"]', form).value, ...accountPermissions(form) };
+  accountOperation(form, $(".connection-message", form), async (signal, current) => {
+    await api("api/accounts", { method: "POST", body: JSON.stringify(payload), signal });
+    if (!current()) return;
+    form.reset();
+    connectionMessage($(".connection-message", form), "User created.", "success");
+    await loadAccounts();
+  }).then(() => syncPermissionEditor(form));
+});
+$("#create-invite-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = { ...accountPermissions(form), days: Number($('[name="days"]', form).value), email: $('[name="email"]', form).value.trim() || null, note: $('[name="note"]', form).value.trim() || null, link_base: location.href.split("#")[0] };
+  accountOperation(form, $(".connection-message", form), async (signal, current) => {
+    const result = await api("api/accounts/invites", { method: "POST", body: JSON.stringify(payload), signal });
+    if (!current()) return;
+    $("#invite-link").value = result.url;
+    $("#invite-result").hidden = false;
+    $("#invite-copy-message").textContent = "";
+    connectionMessage($(".connection-message", form), result.message || (result.emailed ? "Invitation emailed." : "Invitation created. Copy the link to share it."), "success");
+    $("#invite-link").focus();
+    await loadInvites();
+  });
+});
+$("#invite-copy").addEventListener("click", async () => {
+  const input = $("#invite-link");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    $("#invite-copy-message").textContent = "Link copied.";
+  } catch {
+    input.focus();
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    $("#invite-copy-message").textContent = "Link selected. Use Copy from your device's menu or press Ctrl+C (⌘C on Mac).";
+  }
+});
+
 let settingsController;
 let settingsApps = [];
 let settingsBusy = false;
@@ -816,7 +1257,7 @@ function applyAdultOption(enabled) {
   const wasEnabled = adultEnabled;
   adultEnabled = enabled;
   ++adultStatusSequence;
-  adultStatus.enabled = enabled;
+  adultStatus.enabled = enabled && Boolean(adultStatus.allowed);
   if (!enabled) {
     adultStatus.unlocked = false;
     ++gateSequence;
@@ -845,10 +1286,24 @@ function stopSettings() {
   settingsController = null;
   settingsApps = [];
   settingsBusy = false;
+  uploadOptionsReady = false;
+  $("#upload-options-form").reset();
+  $$("input, button", $("#upload-options-form")).forEach((control) => { control.disabled = true; });
+  connectionMessage($("#upload-options-message"), "");
   $("#settings-connections").replaceChildren();
   $("#settings-status").textContent = "";
   $("#settings-option-message").textContent = "";
   $("#settings-adult").disabled = true;
+  $("#my-account-form").reset();
+  $("#settings-password-form").reset();
+  $("#accounts-list").replaceChildren();
+  $("#invites-list").replaceChildren();
+  $("#create-account-form").reset();
+  $("#create-invite-form").reset();
+  $$("[data-permission-editor]").forEach(syncPermissionEditor);
+  $$("#settings-users .connection-message, #settings-password-message, #account-message").forEach((message) => { message.textContent = ""; });
+  $("#invite-link").value = "";
+  $("#invite-result").hidden = true;
 }
 
 function connectionMessage(element, message, state = "") {
@@ -859,10 +1314,12 @@ function connectionMessage(element, message, state = "") {
 function settingsPending(pending) {
   settingsBusy = pending;
   $("#settings-adult").disabled = pending;
+  $$("input, button", $("#upload-options-form")).forEach((control) => { control.disabled = pending || !uploadOptionsReady; });
   $$("input, button", $("#settings-connections")).forEach((control) => { control.disabled = pending; });
 }
 
 async function loadConnections(message = "", focusKey) {
+  if (!isAdmin()) return;
   if (!settingsController) settingsController = new AbortController();
   const controller = settingsController;
   settingsPending(true);
@@ -879,12 +1336,14 @@ async function loadConnections(message = "", focusKey) {
       }
     }
     applyAdultOption(Boolean(data.options?.adult_enabled));
+    fillUploadOptions(data.options || {});
+    uploadOptionsReady = true;
     renderConnections();
     connectionMessage($("#settings-status"), message || (settingsApps.length ? "" : "No apps are available to connect."), message ? "success" : "");
     if (focusKey) $$(".connection-card").find((card) => card.dataset.key === focusKey)?.querySelector(".connection-edit").focus();
   } catch (error) {
     if (controller !== settingsController || error.message === "login") return;
-    connectionMessage($("#settings-status"), `${message ? `${message} ` : ""}Couldn’t load connections. Try again.`, "error");
+    connectionMessage($("#settings-status"), error.status === 403 ? error.message : `${message ? `${message} ` : ""}Couldn’t load connections. Try again.`, "error");
     $("#settings-retry").hidden = false;
   } finally {
     if (controller === settingsController) {
@@ -1051,11 +1510,29 @@ $("#settings-adult").addEventListener("change", async (event) => {
   } catch (error) {
     if (controller !== settingsController || error.message === "login") return;
     $("#settings-adult").checked = previous;
-    connectionMessage($("#settings-option-message"), "Couldn’t confirm the preference was saved. Reopen Settings to check and try again.", "error");
+    connectionMessage($("#settings-option-message"), error.status === 403 ? error.message : "Couldn’t confirm the preference was saved. Reopen Settings to check and try again.", "error");
   } finally {
     if (controller === settingsController) settingsPending(false);
   }
 });
+
+function downloadSection(work) {
+  if (permissions.can_download !== true || isPrivateWork(work)) return "";
+  const labels = { calibre: "Save ebook", storyteller: "Save read-along", abs: "Save audiobook", komga: "Save comic", jellyfin: "Save movie", romm: "Save game" };
+  const editions = (work.editions || []).filter((edition) => !edition.hidden && edition.key && labels[edition.source] && (edition.source !== "jellyfin" || work.kind === "movie"));
+  if (!editions.length) return "";
+  const rows = editions.map((edition) => {
+    const label = labels[edition.source];
+    const url = `api/download/${encodeURIComponent(edition.key)}`;
+    const formats = edition.source === "calibre" && Array.isArray(edition.extra?.formats)
+      ? [...new Set(edition.extra.formats.filter((format) => typeof format === "string" && format.trim()).map((format) => format.trim().toUpperCase()))] : [];
+    const control = formats.length > 1
+      ? `<details class="save-formats"><summary>${label}</summary><div class="save-format-links">${formats.map((format) => `<a class="secondary-button" href="${esc(url)}?format=${encodeURIComponent(format.toLowerCase())}" download aria-label="Save ebook as ${esc(format)}">${esc(format)}</a>`).join("")}</div></details>`
+      : `<a class="secondary-button" href="${esc(url)}" download>${label}</a>`;
+    return `<div class="save-edition"><div class="save-edition-copy"><strong>${esc(edition.title || work.title)}</strong><small>${esc([SOURCE[edition.source], edition.library, formats.join(", ")].filter(Boolean).join(" · "))}</small></div>${control}</div>`;
+  }).join("");
+  return `<section class="detail-section"><div class="section-title"><h3>Save to device</h3></div><div class="save-editions">${rows}</div></section>`;
+}
 
 function miniSection(title, items, currentId, className = "") {
   items = (items || []).filter(allowedWork);
@@ -1088,6 +1565,7 @@ function hintedGamePlatform(title, platforms) {
 }
 
 function renderGameRequest(root, title, { editable = false, onSuccess } = {}) {
+  if (!canRequest()) { root.innerHTML = requestHint(); return; }
   const messageId = `game-request-message-${++gamePickerSequence}`;
   root.innerHTML = `<form class="game-request-form" aria-label="Request a game" aria-describedby="${messageId}">
     ${editable ? `<label class="game-title-field">Game title<input name="game" required value="${esc(title)}" autocomplete="off"></label>` : ""}
@@ -1179,6 +1657,8 @@ function renderRequestCards(root, items, seerrEnabled = true, search = false, ro
     let action;
     if (item.status === "available") {
       action = item.in_library ? `<button class="secondary-button" type="button" data-open aria-label="Open ${esc(title)}">Open</button>` : `<span class="request-pill">${search ? "Available" : "In Jellyfin"}</span>`;
+    } else if (!canRequest()) {
+      action = '<span class="hint">Not available to play yet</span>';
     } else if (["requested", "partial"].includes(item.status)) {
       action = `<button class="request-pill" type="button" disabled>${item.status === "partial" ? "Partly available" : "Requested"}</button>`;
     } else if (["book", "comic"].includes(item.kind) && item.status === "not_requested") {
@@ -1342,6 +1822,11 @@ function renderRequestSearch() {
   section.id = "request-search";
   section.className = "request-search";
   section.setAttribute("aria-label", "Search titles to request");
+  if (!canRequest()) {
+    section.innerHTML = requestHint();
+    $("#results-view").append(section);
+    return;
+  }
   section.innerHTML = '<div class="request-search-heading"><h2>Not in your library?</h2><div class="request-search-actions"><button class="secondary-button" type="button" data-screen-search>Search movies &amp; TV to request</button><button class="secondary-button" type="button" data-game-toggle aria-expanded="false" aria-controls="search-game-request">Request a game</button></div></div><div class="game-request" id="search-game-request" hidden><h3>Request a game</h3><div data-game-form></div></div><p class="hint" data-message aria-live="polite" aria-atomic="true"></p><div class="request-grid"></div>';
   $("#results-view").append(section);
   const gameRequest = $("#search-game-request", section);
@@ -1402,6 +1887,7 @@ function findWanted(items, workId, title, format) {
 }
 
 function openBookPicker(root, workId, format, opener, detailSignal, keepLooking, onDownloaded) {
+  if (!canRequest()) { root.innerHTML = requestHint(); return; }
   // workId is a library work id, or { title, author } for a book/comic that isn't in the library
   const target = typeof workId === "string" ? { work: workId } : { title: workId.title || "", author: workId.author || "" };
   let controller;
@@ -1528,11 +2014,11 @@ async function loadWorkRequests(root, workId, result, signal, work) {
     message.textContent = "Request options couldn’t be loaded right now.";
     return;
   }
-  const formats = (data.missing_formats || []).filter((format) => ["ebook", "audiobook"].includes(format));
+  const formats = (canRequest() ? data.missing_formats || [] : []).filter((format) => ["ebook", "audiobook"].includes(format));
   const adaptations = [...(data.adaptations || [])].sort((a, b) => (Number(a.year) || Infinity) - (Number(b.year) || Infinity));
   const screens = adaptations.filter((item) => ["movie", "tv", "game"].includes(item.kind));
   const reading = adaptations.filter((item) => ["book", "comic"].includes(item.kind));
-  message.textContent = !formats.length && !adaptations.length ? "Nothing related found yet." : "";
+  message.textContent = !canRequest() ? REQUEST_HINT : !formats.length && !adaptations.length ? "Nothing related found yet." : "";
   const content = $("[data-request-content]", root);
   content.innerHTML = `${formats.length ? `<div class="request-group"><h4>Also available to request</h4>${!data.shelfmark_enabled ? '<p class="hint" id="shelfmark-hint">Connect Shelfmark in config to request books</p>' : ""}${formats.map((format) => `<div class="book-request" data-book-format="${format}"><h5>Request the ${format}</h5><div data-book-options><p class="hint">Checking wanted status…</p></div><p class="hint request-message" data-book-message role="status" tabindex="-1"></p></div>`).join("")}</div>` : ""}${screens.length ? '<div class="request-group"><h4>On screen &amp; in games</h4><div class="request-grid" data-related="screens"></div></div>' : ""}${reading.length ? '<div class="request-group"><h4>Books &amp; comics</h4><div class="request-grid" data-related="reading"></div></div>' : ""}`;
   if (screens.length) renderRequestCards($('[data-related="screens"]', content), screens, data.seerr_enabled, false, data.romarr_enabled);
@@ -1694,6 +2180,7 @@ function progressBar(value, label) {
 }
 
 function actionButton(action, payload, label, options = {}) {
+  if (!canRequest()) return "";
   const data = { action, ...payload };
   const key = JSON.stringify(data);
   return `<button type="button" class="secondary-button live-button${options.monitor ? " monitor-button" : ""}" data-live-action="${esc(key)}"${options.monitor ? ` aria-pressed="${Boolean(payload.monitored === false)}"` : ""}${options.context ? ` aria-label="${esc(label)} — ${esc(options.context)}"` : ""}${options.title ? ` title="${esc(options.title)}"` : ""}>${esc(label)}</button>`;
@@ -1740,18 +2227,18 @@ function episodeRow(episode, canManage) {
 }
 
 function showLive(data) {
-  const canManage = data.source === "sonarr" && data.series_id != null;
+  const canManage = canRequest() && data.source === "sonarr" && data.series_id != null;
   const seasons = [...(data.seasons || [])].sort((a, b) => (a.season === 0 ? Infinity : a.season) - (b.season === 0 ? Infinity : b.season));
-  return `<div class="section-title"><h3>Episodes</h3><span>${esc(data.source === "sonarr" ? "Sonarr + Jellyfin" : "Jellyfin")}</span></div><div class="live-toolbar"><p class="hint">${countText(data.have)} on disk · ${countText(data.total)} total${typeof data.monitored === "boolean" ? ` · Series ${data.monitored ? "monitored" : "not monitored"}` : ""}</p>${canManage ? `<div class="live-controls">${actionButton("search_missing", { series_id: data.series_id }, "Search all missing")}${searchHarderButton({ series_id: data.series_id }, "All seasons")}</div>` : '<p class="hint">Search and monitoring controls appear for shows tracked in Sonarr.</p>'}</div><div class="seasons">${seasons.map((season, index) => {
+  return `<div class="section-title"><h3>Episodes</h3><span>${esc(data.source === "sonarr" ? "Sonarr + Jellyfin" : "Jellyfin")}</span></div><div class="live-toolbar"><p class="hint">${countText(data.have)} on disk · ${countText(data.total)} total${typeof data.monitored === "boolean" ? ` · Series ${data.monitored ? "monitored" : "not monitored"}` : ""}</p>${canManage ? `<div class="live-controls">${actionButton("search_missing", { series_id: data.series_id }, "Search all missing")}${searchHarderButton({ series_id: data.series_id }, "All seasons")}</div>` : canRequest() ? '<p class="hint">Search and monitoring controls appear for shows tracked in Sonarr.</p>' : ""}</div><div class="seasons">${seasons.map((season, index) => {
     const title = season.season === 0 ? "Specials" : `Season ${season.season}`;
     return `<details class="season-panel" data-disclosure="season-${esc(season.season)}"${index === 0 && season.season !== 0 ? " open" : ""}><summary><strong>${esc(title)}</strong><span>${countText(season.have)}/${countText(season.aired)} aired · ${countText(season.missing)} missing · ${countText(season.watched)} watched</span></summary><div class="season-tools"><span class="hint">${countText(season.total)} episodes${typeof season.monitored === "boolean" ? ` · ${season.monitored ? "Monitored" : "Not monitored"}` : ""}</span><div class="live-controls">${canManage ? monitorButton("monitor_season", { series_id: data.series_id, season: season.season }, season.monitored, title) + actionButton("search_season", { series_id: data.series_id, season: season.season }, "Search missing", { context: title }) + (season.missing > 0 ? searchHarderButton({ series_id: data.series_id, season: season.season }, title) : "") : ""}</div></div><ol class="episode-list">${(season.episodes || []).map((episode) => episodeRow(episode, canManage)).join("") || '<li class="hint empty-live">No episode details available.</li>'}</ol></details>`;
   }).join("") || '<p class="hint">No seasons available yet.</p>'}</div>`;
 }
 
 function movieLive(data) {
-  const canManage = data.radarr_id != null;
+  const canManage = canRequest() && data.radarr_id != null;
   const playback = data.watched ? "✓ Watched" : data.position > 0 ? `Continue at ${timestamp(data.position)}${data.runtime ? ` of ${timestamp(data.runtime)}` : ""}` : "Not watched";
-  return `<div class="section-title"><h3>Movie file</h3><span class="state-chip state-${data.has_file ? "available" : "neutral"}">${data.has_file ? "On disk" : data.available === false ? "Not yet available" : "Missing"}</span></div><dl class="file-facts">${[["Quality", data.quality], ["Size", data.has_file ? sizeText(data.size) : null], ["Video", data.video], ["Audio", data.audio]].map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value || "—")}</dd></div>`).join("")}</dl><div class="movie-playback"><p>${esc(playback)}</p>${data.runtime > 0 ? progressBar(data.watched ? 100 : data.position / data.runtime * 100, "Movie watched") : ""}</div><div class="live-controls">${canManage ? monitorButton("monitor_movie", { movie_id: data.radarr_id }, data.monitored, "Movie") + actionButton("search_movie", { movie_id: data.radarr_id }, data.has_file ? "Search for better" : "Search") + (!data.has_file ? searchHarderButton({ movie_id: data.radarr_id }, "Movie") : "") : '<p class="hint">Search and monitoring controls appear for movies tracked in Radarr.</p>'}</div>${(data.downloading || []).map((record) => downloadStatus(record, "Movie download")).join("")}`;
+  return `<div class="section-title"><h3>Movie file</h3><span class="state-chip state-${data.has_file ? "available" : "neutral"}">${data.has_file ? "On disk" : data.available === false ? "Not yet available" : "Missing"}</span></div><dl class="file-facts">${[["Quality", data.quality], ["Size", data.has_file ? sizeText(data.size) : null], ["Video", data.video], ["Audio", data.audio]].map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value || "—")}</dd></div>`).join("")}</dl><div class="movie-playback"><p>${esc(playback)}</p>${data.runtime > 0 ? progressBar(data.watched ? 100 : data.position / data.runtime * 100, "Movie watched") : ""}</div><div class="live-controls">${canManage ? monitorButton("monitor_movie", { movie_id: data.radarr_id }, data.monitored, "Movie") + actionButton("search_movie", { movie_id: data.radarr_id }, data.has_file ? "Search for better" : "Search") + (!data.has_file ? searchHarderButton({ movie_id: data.radarr_id }, "Movie") : "") : canRequest() ? '<p class="hint">Search and monitoring controls appear for movies tracked in Radarr.</p>' : ""}</div>${(data.downloading || []).map((record) => downloadStatus(record, "Movie download")).join("")}`;
 }
 
 function bookLive(data) {
@@ -1876,6 +2363,7 @@ async function openWork(id) {
         <div class="detail-content">
           ${!wasPrivate && ["show", "movie", "book"].includes(work.kind) ? '<section class="detail-section live-section" aria-label="Live library details"><p class="live-action-message hint" role="status" aria-live="polite" aria-atomic="true"></p><div data-live-content aria-busy="true">' + liveSkeleton() + '</div></section>' : ""}
           <section class="detail-section actions-section"><div class="section-title"><h3>Open in</h3><span>${visibleEditions.length}</span></div><div class="edition-grid">${actions || '<p class="hint">No app links are configured for this work.</p>'}</div>${unlinkedSplits ? `<div class="unlinked-splits">${unlinkedSplits}</div>` : ""}</section>
+          ${downloadSection(work)}
           ${work.description ? `<section class="detail-section"><div class="section-title"><h3>About</h3></div><div class="description">${esc(work.description)}</div></section>` : ""}
           ${miniSection(work.series ? `More in ${work.series}` : "Series", work.series_works, work.id, "series-section")}
           ${miniSection(universeTitle, work.universe_works, work.id, "universe-section")}
@@ -2048,11 +2536,11 @@ function genericActivity(value, name, empty) {
 }
 
 function wantedActivity(items) {
-  return `<ul class="activity-list wanted-list">${(items || []).map((item) => {
+  return `${canRequest() ? "" : requestHint()}<ul class="activity-list wanted-list">${(items || []).map((item) => {
     const id = String(item.id);
     const context = `${item.title || "Untitled book"} (${item.format})`;
     const disabled = wantedPending.has(id) ? " disabled" : "";
-    return `<li class="wanted-row" data-wanted-id="${esc(id)}"><div class="wanted-copy"><strong>${esc(item.title || "Untitled book")}</strong>${item.author ? `<p class="hint">${esc(item.author)}</p>` : ""}${wantedStatus(item)}<p class="hint request-message" role="status" aria-atomic="true">${esc(wantedMessages.get(id) || "")}</p></div><div class="wanted-actions"><button class="secondary-button live-button" type="button" data-wanted-action="search" aria-label="Search now for ${esc(context)}"${disabled}>Search now</button><button class="text-button live-button" type="button" data-wanted-action="stop" aria-label="Stop looking for ${esc(context)}"${disabled}>Stop looking</button></div></li>`;
+    return `<li class="wanted-row" data-wanted-id="${esc(id)}"><div class="wanted-copy"><strong>${esc(item.title || "Untitled book")}</strong>${item.author ? `<p class="hint">${esc(item.author)}</p>` : ""}${wantedStatus(item)}<p class="hint request-message" role="status" aria-atomic="true">${esc(wantedMessages.get(id) || "")}</p></div>${canRequest() ? `<div class="wanted-actions"><button class="secondary-button live-button" type="button" data-wanted-action="search" aria-label="Search now for ${esc(context)}"${disabled}>Search now</button><button class="text-button live-button" type="button" data-wanted-action="stop" aria-label="Stop looking for ${esc(context)}"${disabled}>Stop looking</button></div>` : ""}</li>`;
   }).join("") || '<li class="hint">No books on the wanted list.</li>'}</ul>`;
 }
 

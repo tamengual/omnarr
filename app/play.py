@@ -118,9 +118,16 @@ def rewrite_playlist(text, base=""):
 
 
 # ── Audiobookshelf ───────────────────────────────────────────────────────────
-def abs_token(cfg):
-    """API key (API mode), or — legacy database mode only — the configured user's token
-    read live from ABS's database (never stored by Omnarr)."""
+def abs_token(cfg, owner=False):
+    """ABS token for the current request's identity (identity.py): the person's own API key,
+    the server's configured one (OWNER), or None (no personal progress). owner=True always
+    returns the configured token, for reading files and metadata."""
+    from . import identity
+    who = identity.OWNER if owner else identity.abs_key.get()
+    if who is None:
+        return None
+    if who != identity.OWNER:
+        return who
     s = cfg.source("abs")
     if s.get("api_key"):
         return s["api_key"]
@@ -144,8 +151,12 @@ def _audio_info_api(cfg, s, item_id):
     from .connectors import abs as abs_c
     with abs_c.client(s) as c:
         det = c.get(f"/api/items/{item_id}", params={"expanded": 1}).json()
-        pr = c.get(f"/api/me/progress/{item_id}")
-        p = pr.json() if pr.status_code == 200 else {}
+    p = {}
+    tok = abs_token(cfg)                      # the listener's own progress, if they have an identity
+    if tok:
+        with httpx.Client(base_url=abs_base(cfg), timeout=30, headers={"Authorization": f"Bearer {tok}"}) as c:
+            pr = c.get(f"/api/me/progress/{item_id}")
+            p = pr.json() if pr.status_code == 200 else {}
     m = det.get("media") or {}
     tracks, offset = [], 0.0
     for f in sorted(m.get("audioFiles") or [], key=lambda f: f.get("index") or 0):
@@ -163,9 +174,12 @@ def _audio_info_api(cfg, s, item_id):
 
 
 def audio_info(cfg, item_id):
+    from . import identity
     s = cfg.source("abs")
     if s.get("api_key"):
         return _audio_info_api(cfg, s, item_id)
+    if identity.abs_key.get() != identity.OWNER:
+        return None                           # database mode only knows the configured user
     con = ro_connect(s["db"])
     try:
         r = con.execute("""SELECT b.id AS book_id, b.title, b.audioFiles, b.chapters, b.duration, b.coverPath
@@ -193,6 +207,8 @@ def audio_info(cfg, item_id):
 
 def audio_progress(cfg, item_id, position, duration, finished):
     tok = abs_token(cfg)
+    if not tok:
+        return False                          # no linked Audiobookshelf account: nothing written
     finished = bool(finished or (duration and position >= duration - 30))
     body = {"currentTime": max(0.0, position), "duration": duration,
             "progress": min(1.0, position / duration) if duration else 0, "isFinished": finished}

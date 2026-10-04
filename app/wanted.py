@@ -37,20 +37,26 @@ JUNK = re.compile(r"\b(summary|study guide|sparknotes|cliffs?notes|analysis of|w
 SCHEMA = """CREATE TABLE IF NOT EXISTS wanted_books (
   id INTEGER PRIMARY KEY, work_id TEXT, title TEXT, author TEXT, format TEXT,
   provider TEXT, book_id TEXT, status TEXT, attempts INTEGER DEFAULT 0, tried TEXT DEFAULT '[]',
-  current TEXT, current_title TEXT, created REAL, last_search REAL, next_search REAL, done_at REAL, note TEXT)"""
+  current TEXT, current_title TEXT, created REAL, last_search REAL, next_search REAL, done_at REAL, note TEXT,
+  account_id INTEGER)"""
 
 
 def _con(state_path):
     con = sqlite3.connect(state_path)
     con.row_factory = sqlite3.Row
     con.execute(SCHEMA)
+    if "account_id" not in {r[1] for r in con.execute("PRAGMA table_info(wanted_books)")}:
+        con.execute("ALTER TABLE wanted_books ADD COLUMN account_id INTEGER")      # who asked (0.3+)
     return con
 
 
 def list_all(state_path):
     con = _con(state_path)
     try:
-        rows = [dict(r) for r in con.execute("SELECT * FROM wanted_books ORDER BY status='done', created DESC")]
+        has_accounts = con.execute("SELECT 1 FROM sqlite_master WHERE name='accounts'").fetchone()
+        q = ("SELECT w.*, a.username AS requested_by FROM wanted_books w LEFT JOIN accounts a ON a.id=w.account_id"
+             if has_accounts else "SELECT *, NULL AS requested_by FROM wanted_books w")
+        rows = [dict(r) for r in con.execute(q + " ORDER BY w.status='done', w.created DESC")]
     finally:
         con.close()
     for r in rows:
@@ -58,7 +64,8 @@ def list_all(state_path):
     return rows
 
 
-def add(state_path, title, author, fmt, work_id=None, provider=None, book_id=None, current=None, current_title=None):
+def add(state_path, title, author, fmt, work_id=None, provider=None, book_id=None, current=None, current_title=None,
+        account_id=None):
     if fmt not in FORMATS:
         raise ValueError("format must be ebook, audiobook or comic")
     con = _con(state_path)
@@ -73,11 +80,11 @@ def add(state_path, title, author, fmt, work_id=None, provider=None, book_id=Non
                             (current, current_title, now, wid))
         else:
             cur = con.execute("""INSERT INTO wanted_books (work_id, title, author, format, provider, book_id, status,
-                                 current, current_title, created, last_search, next_search, note)
-                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 current, current_title, created, last_search, next_search, note, account_id)
+                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                               (work_id, title, author, fmt, provider, book_id,
                                "downloading" if current else "searching", current, current_title,
-                               now, now if current else None, now, ""))
+                               now, now if current else None, now, "", account_id))
             wid = cur.lastrowid
         con.commit()
         return wid

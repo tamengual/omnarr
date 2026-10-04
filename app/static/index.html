@@ -20,6 +20,7 @@
       <div class="eyebrow">Your private collection</div>
       <h1>Omnarr</h1>
       <p id="auth-msg" class="auth-copy">Sign in to browse your library.</p>
+      <label class="field"><span>Username</span><input id="auth-username" autocomplete="username" required></label>
       <label class="field"><span>Password</span><input id="auth-pw" type="password" autocomplete="current-password" required minlength="8"></label>
       <label class="field" id="auth-confirm" hidden><span>Confirm password</span><input id="auth-pw2" type="password" autocomplete="new-password" minlength="8"></label>
       <button type="submit" id="auth-btn" class="primary-button">Sign in</button>
@@ -38,6 +39,8 @@
           <kbd aria-hidden="true">/</kbd>
         </div>
         <div class="header-actions">
+        <span id="signed-in-user" class="signed-in-user"></span>
+        <button class="header-action" id="upload-open" type="button" aria-label="Upload files" aria-haspopup="dialog" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></svg><span>Upload</span></button>
         <button class="header-action private-trigger" id="private-toggle" type="button" aria-label="Private collection" aria-haspopup="dialog" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg><span>Private</span></button>
         <button class="header-action filter-trigger" id="filters-toggle" type="button" aria-controls="filters" aria-expanded="false">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10m-7 6h4"/></svg><span>Filters</span><span class="filter-total" id="filter-total" hidden></span>
@@ -133,10 +136,32 @@
             <button id="settings-done" class="secondary-button" type="button">Back to library</button>
           </div>
           <p id="settings-welcome" class="settings-welcome" hidden>Connect the apps you use — everything is optional; you can add more later.</p>
-          <section class="settings-options" aria-labelledby="settings-private-label">
+          <section id="settings-private" class="settings-options" aria-labelledby="settings-private-label" hidden>
             <label class="check" for="settings-adult"><input id="settings-adult" type="checkbox" role="switch" aria-describedby="settings-private-help" disabled><span id="settings-private-label">Private (adult) section</span></label>
             <p id="settings-private-help" class="hint">Show Private and its app connections. The collection stays PIN-locked; turning this off hides it without forgetting your connections.</p>
             <p id="settings-option-message" class="connection-message" role="status" aria-live="polite"></p>
+          </section>
+          <section id="settings-uploads" class="settings-options" aria-labelledby="settings-uploads-title" hidden>
+            <h2 id="settings-uploads-title">Uploads</h2>
+            <p id="upload-folders-help" class="hint">These are paths inside Omnarr's container — mount the folders read-write first. Leave empty to turn uploads off.</p>
+            <form id="upload-options-form" class="password-form" aria-describedby="upload-folders-help">
+              <label class="field">Books &amp; comics drop-off folder (e.g. your Calibre-Web-Automated ingest)<input name="upload_dir" autocomplete="off" spellcheck="false" disabled></label>
+              <label class="field">Audiobooks folder (inside an Audiobookshelf library)<input name="upload_audio_dir" autocomplete="off" spellcheck="false" disabled></label>
+              <label class="field">Max size (MB)<input name="upload_max_mb" type="number" min="1" step="1" inputmode="numeric" required disabled></label>
+              <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save</button></div>
+            </form>
+            <p id="upload-options-message" class="connection-message" role="status" aria-live="polite"></p>
+          </section>
+          <section class="settings-options" aria-labelledby="my-account-title">
+            <h2 id="my-account-title">My account</h2>
+            <p class="hint">Link your own Jellyfin user and Audiobookshelf API key so playback and progress are yours.</p>
+            <p id="account-identity" class="hint" hidden>Until you link your own, you use the server's accounts from Settings → Connections.</p>
+            <form id="my-account-form" class="password-form">
+              <label class="field">Jellyfin username<input name="jellyfin_user" autocomplete="off" disabled></label>
+              <label class="field">Audiobookshelf API key<input name="abs_api_key" type="password" autocomplete="off" disabled></label>
+              <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save account</button><button id="account-retry" class="secondary-button" type="button" hidden>Try again</button></div>
+            </form>
+            <p id="account-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
           <section class="settings-options" aria-labelledby="settings-password-title">
             <h2 id="settings-password-title" class="check">Password</h2>
@@ -149,10 +174,45 @@
             </form>
             <p id="settings-password-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
+          <section id="settings-users" class="settings-options" aria-labelledby="users-title" hidden>
+            <div class="connection-heading"><h2 id="users-title">Users</h2><button id="users-refresh" class="text-button" type="button">Refresh users</button></div>
+            <p id="users-message" class="connection-message" role="status" aria-live="polite"></p>
+            <div id="accounts-list" class="accounts-list"></div>
+            <details class="account-create"><summary>Create a user</summary><form id="create-account-form" class="account-form">
+              <label class="field">Username<input name="username" autocomplete="off" required></label>
+              <label class="field">Password (8+ characters)<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+              <div data-permission-editor="new-account"></div>
+              <button class="primary-button" type="submit">Create user</button>
+              <p class="connection-message" role="status" aria-live="polite"></p>
+            </form></details>
+            <h3>Invitations</h3>
+            <form id="create-invite-form" class="account-form">
+              <div data-permission-editor="new-invite"></div>
+              <div class="account-fields">
+                <label class="field">Expires in days<input name="days" type="number" min="1" max="90" value="7" required></label>
+                <label class="field">Email (optional)<input name="email" type="email" autocomplete="off" aria-describedby="invite-email-help"></label>
+                <label class="field">Note (optional)<input name="note" autocomplete="off"></label>
+              </div>
+              <p id="invite-email-help" class="hint" hidden>Set up Email in Connections to send invitations</p>
+              <p class="hint">Send this to someone who can reach this address (e.g. on your Tailscale).</p>
+              <button class="primary-button" type="submit">Create invitation</button>
+              <p class="connection-message" role="status" aria-live="polite"></p>
+            </form>
+            <div id="invite-result" class="account-form" hidden>
+              <label class="field">Invitation link<input id="invite-link" readonly></label>
+              <button id="invite-copy" class="secondary-button" type="button">Copy link</button>
+              <p id="invite-copy-message" class="hint" role="status"></p>
+            </div>
+            <p id="invites-message" class="connection-message" role="status" aria-live="polite"></p>
+            <button id="invites-refresh" class="text-button" type="button">Refresh invitations</button>
+            <ul id="invites-list" class="invites-list"></ul>
+          </section>
+          <section id="settings-admin-connections" hidden>
           <h2>Connections</h2>
           <p id="settings-status" class="connection-message" role="status" aria-live="polite"></p>
           <button id="settings-retry" class="secondary-button" type="button" hidden>Try again</button>
           <div id="settings-connections" class="connection-groups"></div>
+          </section>
         </section>
 
         <section id="results-view" class="results-view" aria-labelledby="results-title" hidden>
@@ -179,6 +239,22 @@
         <p id="pin-error" class="err" role="alert"></p>
         <button id="pin-submit" class="primary-button" type="submit">Unlock</button>
       </form>
+    </dialog>
+    <dialog id="upload-dialog" class="upload-dialog" aria-labelledby="upload-title" aria-describedby="upload-note">
+      <div class="pin-heading"><h2 id="upload-title">Upload</h2><button id="upload-close" class="icon-button" type="button" aria-label="Close upload"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <p id="upload-note" class="hint">Ebooks and comics go to the library's drop-off folder; audiobooks get a folder each. They appear after the next library scan.</p>
+      <p id="upload-status" class="connection-message" role="status" aria-live="polite"></p>
+      <button id="upload-retry" class="secondary-button" type="button" hidden>Try again</button>
+      <form id="upload-form" hidden>
+        <div id="upload-drop" class="upload-drop">
+          <p>Drop files here, or choose files below.</p>
+          <label class="field" for="upload-files">Choose files<input id="upload-files" type="file" multiple aria-describedby="upload-limit upload-types"></label>
+        </div>
+        <p id="upload-limit" class="hint"></p><p id="upload-types" class="hint"></p>
+        <ul id="upload-selection" class="upload-file-list"></ul>
+        <button id="upload-submit" class="primary-button" type="submit" disabled>Upload files</button>
+      </form>
+      <ul id="upload-results" class="upload-file-list" aria-label="Upload results" aria-live="polite"></ul>
     </dialog>
     <dialog id="detail" aria-label="Media details"><div id="detail-body"></div></dialog>
   </div>

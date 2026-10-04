@@ -43,20 +43,31 @@ def _jf(cfg):
                         headers={"Authorization": f'MediaBrowser Token="{s["api_key"]}"'})
 
 
-def _jf_user(cfg):
+def _jf_user(cfg, owner=False):
+    """Jellyfin user id for the current request's identity (see identity.py): the signed-in
+    person's own user, the server's configured user (OWNER), or None for no identity.
+    owner=True always returns the configured user (for reading shared metadata)."""
+    from . import identity
+    want = identity.OWNER if owner else identity.jellyfin_user.get()
+    if want is None:
+        return None
+    name = (cfg.source("jellyfin").get("user") or "") if want == identity.OWNER else want
+
     def fetch():
         with _jf(cfg) as c:
             users = c.get("/Users").json()
-        want = (cfg.source("jellyfin").get("user") or "").lower()
-        u = next((u for u in users if u["Name"].lower() == want), users[0])
-        return u["Id"]
-    return _cached("jf:user", fetch)
+        u = next((u for u in users if u["Name"].lower() == name.lower()), None)
+        if u is None and want == identity.OWNER:
+            u = users[0]                       # legacy behaviour for the configured user
+        return u["Id"] if u else None
+    return _cached(f"jf:user:{name.lower()}", fetch)
 
 
 def _jf_episodes(cfg, series_id):
     uid = _jf_user(cfg)
+    params = {"UserId": uid, "EnableUserData": "true"} if uid else {}
     with _jf(cfg) as c:
-        r = c.get(f"/Shows/{series_id}/Episodes", params={"UserId": uid, "EnableUserData": "true"})
+        r = c.get(f"/Shows/{series_id}/Episodes", params=params)
         items = r.json().get("Items", []) if r.status_code == 200 else []
     out = {}
     for it in items:
@@ -77,7 +88,7 @@ def show_detail(cfg, editions):
     watched = {}
     if jf and cfg.source("jellyfin"):
         try:
-            watched = _cached(f"jfeps:{jf['source_id']}", lambda: _jf_episodes(cfg, jf["source_id"]))
+            watched = _cached(f"jfeps:{_jf_user(cfg)}:{jf['source_id']}", lambda: _jf_episodes(cfg, jf["source_id"]))   # per person
         except Exception as e:
             log.warning("jellyfin episodes failed: %s", e)
     if not son or not cfg.source("sonarr"):
@@ -150,8 +161,8 @@ def movie_detail(cfg, editions):
         try:
             uid = _jf_user(cfg)
             with _jf(cfg) as c:
-                it = c.get(f"/Users/{uid}/Items/{jf['source_id']}").json()
-            ud = it.get("UserData") or {}
+                it = c.get(f"/Users/{uid or _jf_user(cfg, owner=True)}/Items/{jf['source_id']}").json()
+            ud = (it.get("UserData") or {}) if uid else {}
             out.update(watched=bool(ud.get("Played")), position=(ud.get("PlaybackPositionTicks") or 0) / 1e7,
                        runtime=(it.get("RunTimeTicks") or 0) / 1e7)
         except Exception as e:

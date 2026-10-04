@@ -134,6 +134,11 @@ def _test_stash(s):
     return True, f"Connected: {r.json()['data']['findScenes']['count']} scenes"
 
 
+def _test_email(s):
+    from .. import mailer
+    return mailer.test(s)
+
+
 URL = lambda label, ph: {"key": "url", "label": f"{label} address", "type": "url", "required": True, "placeholder": ph,
                          "help": "How Omnarr's server reaches it, e.g. http://nas.local:8989, or http://sonarr:8989 on the same Docker network."}
 KEY = lambda where: {"key": "api_key", "label": "API key", "type": "secret", "required": True, "help": where}
@@ -188,6 +193,15 @@ APPS = [
     # ── private ──
     {"key": "stash", "label": "Stash (private, PIN-locked)", "category": "Private", "test": _test_stash,
      "about": "Adult scenes, shown only in the PIN-locked private section.", "fields": [URL("Stash", "http://host:9999"), KEY("Stash → Settings → Security → API key."), BROWSER]},
+    # ── other ──
+    {"key": "email", "label": "Email (for invitations)", "category": "Other", "test": _test_email,
+     "about": "Lets Omnarr email sign-up invitations. Any SMTP server works; for Gmail use smtp.gmail.com, port 587 and an app password.",
+     "fields": [{"key": "host", "label": "SMTP server", "type": "text", "required": True, "placeholder": "smtp.gmail.com"},
+                {"key": "port", "label": "Port", "type": "text", "required": True, "placeholder": "587"},
+                {"key": "security", "label": "Security (starttls, ssl or none)", "type": "text", "required": False, "placeholder": "starttls"},
+                {"key": "username", "label": "Username", "type": "text", "required": False, "placeholder": "you@gmail.com"},
+                {"key": "password", "label": "Password / app password", "type": "secret", "required": False},
+                {"key": "from_address", "label": "Send as", "type": "text", "required": False, "placeholder": "Omnarr <you@gmail.com>"}]},
 ]
 BY_KEY = {a["key"]: a for a in APPS}
 

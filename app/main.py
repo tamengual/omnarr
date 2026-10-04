@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config as config_mod, indexer, live, normalize, play, requests_, search, wanted
+from . import accounts, config as config_mod, identity, indexer, live, normalize, play, requests_, search, wanted
 from .connectors import abs as abs_c, arr, calibre, jellyfin, komga, registry, romm, stash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -48,20 +48,27 @@ app = FastAPI(title="Omnarr", docs_url=None, redoc_url=None, lifespan=_lifespan)
 _index_lock = threading.Lock()
 
 
-# ── state DB (password hash, sessions, manual overrides) ─────────────────────
+# ── state DB, accounts and sessions ──────────────────────────────────────────
+_accounts_ready = False
+
+
 def state():
+    global _accounts_ready
     con = indexer._state(STATE)
     con.row_factory = sqlite3.Row
+    if not _accounts_ready:
+        cfg.connections(fresh=True)           # makes sure the connections table exists
+        accounts.ensure(con)                  # one-time import of the old single password
+        _accounts_ready = True
     return con
+
+
+_hash = accounts.hash_secret
 
 
 def _setting(con, k):
     r = con.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
     return r[0] if r else None
-
-
-def _hash(pw, salt):
-    return hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=2 ** 14, r=8, p=1).hex()
 
 
 def _ingress_path(request):
@@ -76,32 +83,49 @@ def _base_path(request):
 
 
 def _session(request):
-    if _ingress_path(request):
-        # HA has already authenticated this user; one Omnarr session per HA user.
-        tok = "ha:" + (request.headers.get("x-remote-user-id") or "user")
-        con = state()
-        try:
-            r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
-            if not r:
-                with con:
-                    con.execute("INSERT INTO sessions VALUES (?,?,?,0)", (tok, time.time(), 4102444800))
-                r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
-            return dict(r)
-        finally:
-            con.close()
-    tok = request.cookies.get(COOKIE)
-    if not tok or tok.startswith("ha:"):
-        return None
+    """The current session joined with its account ({..., "account": {...}}), or None."""
     con = state()
     try:
-        r = con.execute("SELECT * FROM sessions WHERE token=? AND expires>?", (tok, time.time())).fetchone()
-        return dict(r) if r else None
+        if _ingress_path(request):
+            # HA has already authenticated this person: one account per HA user.
+            uid = request.headers.get("x-remote-user-id") or "user"
+            name = request.headers.get("x-remote-user-display-name") or request.headers.get("x-remote-user-name") or "ha-user"
+            acct = accounts.for_ha_user(con, uid, name)
+            tok = "ha:" + uid
+            r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
+            if not r or r["account_id"] != acct["id"]:
+                with con:
+                    con.execute("INSERT OR REPLACE INTO sessions (token, created, expires, adult_until, account_id) "
+                                "VALUES (?,?,?,?,?)", (tok, time.time(), 4102444800, (r["adult_until"] if r else 0) or 0, acct["id"]))
+                r = con.execute("SELECT * FROM sessions WHERE token=?", (tok,)).fetchone()
+        else:
+            tok = request.cookies.get(COOKIE)
+            if not tok or tok.startswith("ha:"):
+                return None
+            r = con.execute("SELECT * FROM sessions WHERE token=? AND expires>?", (tok, time.time())).fetchone()
+            acct = accounts.get(con, r["account_id"]) if r else None
+            if not acct:
+                return None
+        return {**dict(r), "account": dict(acct)}
     finally:
         con.close()
 
 
+def _account(request):
+    sess = _session(request)
+    return sess["account"] if sess else None
+
+
 def _adult_ok(sess):
-    return _adult_enabled() and bool(sess and (sess.get("adult_until") or 0) > time.time())
+    return (_adult_enabled() and bool(sess) and bool(sess["account"].get("adult_allowed"))
+            and (sess.get("adult_until") or 0) > time.time())
+
+
+ADMIN_PATHS = ("/api/setup/", "/api/reindex", "/api/override", "/api/accounts")
+# Anything that makes the server fetch or change something needs the "can request" switch.
+REQUEST_PATHS = ("/api/request/", "/api/action", "/api/wanted")
+DOWNLOAD_PATHS = ("/api/download/",)
+UPLOAD_PATHS = ("/api/upload",)
 
 
 @app.middleware("http")
@@ -118,8 +142,28 @@ async def revalidate_ui(request: Request, call_next):
 async def require_login(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api/") and not path.startswith("/api/auth/") and path != "/api/health":
-        if not _session(request):
+        sess = _session(request)
+        if not sess:
             return JSONResponse({"error": "login required"}, status_code=401)
+        if path.startswith(ADMIN_PATHS) and sess["account"]["role"] != "admin":
+            return JSONResponse({"error": "Only an admin can do that", "detail": "Only an admin can do that"}, status_code=403)
+        if (path.startswith(REQUEST_PATHS) and request.method != "GET"
+                and not accounts.allowed(sess["account"], "can_request")):
+            msg = "Your account can browse and play, but not request downloads"
+            return JSONResponse({"error": msg, "detail": msg}, status_code=403)
+        if path.startswith(DOWNLOAD_PATHS) and not accounts.allowed(sess["account"], "can_download"):
+            msg = "Your account can't save files to your device"
+            return JSONResponse({"error": msg, "detail": msg}, status_code=403)
+        if path.startswith(UPLOAD_PATHS) and request.method != "GET" and not accounts.allowed(sess["account"], "can_upload"):
+            msg = "Your account can't upload files"
+            return JSONResponse({"error": msg, "detail": msg}, status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def act_as(request: Request, call_next):
+    """Jellyfin/ABS calls in this request use the signed-in person's own identity."""
+    identity.set_for(_account(request) if request.url.path.startswith("/api/") else None)
     return await call_next(request)
 
 
@@ -128,15 +172,22 @@ async def require_login(request: Request, call_next):
 def auth_status(request: Request):
     con = state()
     try:
-        has_pw = _setting(con, "password_hash") is not None
+        n_accounts = accounts.count(con)
+        any_password = con.execute("SELECT 1 FROM accounts WHERE hash IS NOT NULL").fetchone() is not None
     finally:
         con.close()
     sess = _session(request)
-    # In the HA add-on, a direct visitor must never get to choose the first password.
-    return {"setup_needed": not has_pw and not HA_INGRESS, "has_password": has_pw,
-            "logged_in": bool(sess), "adult_unlocked": _adult_ok(sess),
-            "adult_enabled": _adult_enabled(),
-            "connections_needed": bool(sess) and not cfg.connections(),
+    acct = sess["account"] if sess else None
+    is_admin = bool(acct and acct["role"] == "admin")
+    # In the HA add-on, a direct visitor must never get to create the first account.
+    return {"setup_needed": n_accounts == 0 and not HA_INGRESS,
+            "has_password": bool(acct and acct["hash"]) if acct else any_password,
+            "logged_in": bool(sess), "user": accounts.public(acct) if acct else None,
+            "role": acct["role"] if acct else None,
+            "adult_unlocked": _adult_ok(sess), "adult_enabled": _adult_enabled(),
+            "adult_allowed": bool(acct and acct["adult_allowed"]),
+            "permissions": {k: accounts.allowed(acct, k) for k in accounts.PERMISSIONS} if acct else {},
+            "connections_needed": is_admin and not cfg.connections(),
             "ha_ingress": bool(_ingress_path(request))}
 
 
@@ -150,11 +201,12 @@ def _adult_enabled():
     return (v == "1") if v is not None else bool(cfg.get("adult.enabled", False))
 
 
-def _new_session(request, response):
+def _new_session(request, response, account_id):
     tok = secrets.token_urlsafe(32)
     con = state()
     with con:
-        con.execute("INSERT INTO sessions VALUES (?,?,?,0)", (tok, time.time(), time.time() + SESSION_DAYS * 86400))
+        con.execute("INSERT INTO sessions (token, created, expires, adult_until, account_id) VALUES (?,?,?,0,?)",
+                    (tok, time.time(), time.time() + SESSION_DAYS * 86400, account_id))
         con.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
     con.close()
     response.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
@@ -163,23 +215,21 @@ def _new_session(request, response):
 
 @app.post("/api/auth/setup")
 async def auth_setup(request: Request, response: Response):
+    """First run: create the admin account."""
     if HA_INGRESS:
         raise HTTPException(403, NO_PW_HA)
     body = await request.json()
-    pw = body.get("password") or ""
-    if len(pw) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
     con = state()
     try:
-        if _setting(con, "password_hash") is not None:
+        if accounts.count(con):
             raise HTTPException(409, "Already set up")
-        salt = secrets.token_hex(16)
-        with con:
-            con.execute("INSERT INTO settings VALUES ('password_salt', ?)", (salt,))
-            con.execute("INSERT INTO settings VALUES ('password_hash', ?)", (_hash(pw, salt),))
+        try:
+            aid = accounts.create(con, body.get("username") or "admin", body.get("password") or "", "admin", adult_allowed=True)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     finally:
         con.close()
-    _new_session(request, response)
+    _new_session(request, response, aid)
     return {"ok": True}
 
 
@@ -195,46 +245,269 @@ async def auth_login(request: Request, response: Response):
     body = await request.json()
     con = state()
     try:
-        salt, want = _setting(con, "password_salt"), _setting(con, "password_hash")
+        username = (body.get("username") or "").strip()
+        if username:
+            row = accounts.by_username(con, username)
+        else:                                  # older clients: the only account with a password
+            rows = con.execute("SELECT * FROM accounts WHERE hash IS NOT NULL").fetchall()
+            row = rows[0] if len(rows) == 1 else None
+        any_password = con.execute("SELECT 1 FROM accounts WHERE hash IS NOT NULL").fetchone() is not None
     finally:
         con.close()
-    if not want and HA_INGRESS:
+    if not any_password and HA_INGRESS:
         raise HTTPException(403, NO_PW_HA)
-    if not want or not hmac.compare_digest(_hash(body.get("password") or "", salt), want):
+    if not accounts.verify_password(row, body.get("password")):
         _fails[ip] = recent + [time.time()]
-        raise HTTPException(401, "Wrong password")
-    _new_session(request, response)
+        raise HTTPException(401, "Wrong username or password")
+    _new_session(request, response, row["id"])
     return {"ok": True}
 
 
 @app.post("/api/auth/password")
 async def auth_password(request: Request):
-    """Set or change the password. Needs a signed-in session; the current password is required
-    too, except when coming through Home Assistant (already authenticated by HA)."""
+    """Set or change your own password. The current password is required too, except when
+    coming through Home Assistant (already authenticated by HA) or setting it the first time."""
     sess = _session(request)
     if not sess:
         raise HTTPException(403, "Sign in first")
+    acct = sess["account"]
     body = await request.json()
-    new = body.get("new") or ""
-    if len(new) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
     con = state()
     try:
-        salt, want = _setting(con, "password_salt"), _setting(con, "password_hash")
-        if want and not _ingress_path(request) and not hmac.compare_digest(_hash(body.get("current") or "", salt), want):
+        row = accounts.get(con, acct["id"])
+        if row["hash"] and not _ingress_path(request) and not accounts.verify_password(row, body.get("current")):
             raise HTTPException(403, "Current password is wrong")
-        salt = secrets.token_hex(16)
-        with con:
-            con.execute("INSERT OR REPLACE INTO settings VALUES ('password_salt', ?)", (salt,))
-            con.execute("INSERT OR REPLACE INTO settings VALUES ('password_hash', ?)", (_hash(new, salt),))
-            # sign out every other browser that used the old password (HA sessions are unaffected)
-            con.execute("DELETE FROM sessions WHERE token NOT LIKE 'ha:%' AND token <> ?", (sess["token"],))
+        try:
+            accounts.set_password(con, acct["id"], body.get("new") or "")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        with con:                              # sign out this person's other browsers
+            con.execute("DELETE FROM sessions WHERE account_id=? AND token NOT LIKE 'ha:%' AND token <> ?",
+                        (acct["id"], sess["token"]))
     finally:
         con.close()
     return {"ok": True}
 
 
-# ── adult section: separate PIN, unlock lasts adult.unlock_minutes (default 30) ──
+# ── accounts (admin) and your own app identities ─────────────────────────────
+@app.get("/api/accounts")
+def api_accounts_list():
+    con = state()
+    try:
+        return {"accounts": accounts.list_all(con)}
+    finally:
+        con.close()
+
+
+@app.post("/api/accounts")
+async def api_accounts_create(request: Request):
+    body = await request.json()
+    con = state()
+    try:
+        aid = accounts.create(con, body.get("username"), body.get("password") or "", body.get("role") or "member",
+                              adult_allowed=bool(body.get("adult_allowed")),
+                              can_request=bool(body.get("can_request", True)),
+                              can_download=bool(body.get("can_download", False)),
+                              can_upload=bool(body.get("can_upload", False)))
+        acct = accounts.public(accounts.get(con, aid))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        con.close()
+    live._audit(STATE, "account.create", {"username": acct["username"], "role": acct["role"], "by": _account(request)["username"]}, "ok")
+    return {"ok": True, "account": acct}
+
+
+@app.patch("/api/accounts/{account_id}")
+async def api_accounts_update(account_id: int, request: Request):
+    body = await request.json()
+    me = _account(request)
+    con = state()
+    try:
+        row = accounts.get(con, account_id)
+        if not row:
+            raise HTTPException(404, "No such account")
+        demoting = body.get("role") == "member" and row["role"] == "admin"
+        if demoting and accounts.count(con, "admin") <= 1:
+            raise HTTPException(400, "Omnarr needs at least one admin")
+        try:
+            accounts.update(con, account_id, **{k: body[k] for k in ("role", "username", *accounts.PERMISSIONS) if k in body})
+            if body.get("password"):
+                accounts.set_password(con, account_id, body["password"])
+                with con:
+                    con.execute("DELETE FROM sessions WHERE account_id=? AND token NOT LIKE 'ha:%'", (account_id,))
+            if body.get("clear_pin"):
+                with con:
+                    con.execute("UPDATE accounts SET pin_salt=NULL, pin_hash=NULL WHERE id=?", (account_id,))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        acct = accounts.public(accounts.get(con, account_id))
+    finally:
+        con.close()
+    changed = sorted(k for k in ("role", "username", "password", "clear_pin", *accounts.PERMISSIONS) if k in body)
+    live._audit(STATE, "account.update", {"username": acct["username"], "changed": changed, "by": me["username"]}, "ok")
+    return {"ok": True, "account": acct}
+
+
+@app.delete("/api/accounts/{account_id}")
+def api_accounts_delete(account_id: int, request: Request):
+    me = _account(request)
+    if account_id == me["id"]:
+        raise HTTPException(400, "You can't delete your own account")
+    con = state()
+    try:
+        row = accounts.get(con, account_id)
+        if not row:
+            raise HTTPException(404, "No such account")
+        if row["role"] == "admin" and accounts.count(con, "admin") <= 1:
+            raise HTTPException(400, "Omnarr needs at least one admin")
+        accounts.delete(con, account_id)
+    finally:
+        con.close()
+    live._audit(STATE, "account.delete", {"username": row["username"], "by": me["username"]}, "ok")
+    return {"ok": True}
+
+
+# ── invitations: an admin makes a sign-up link (copy it, or have Omnarr email it) ──
+@app.get("/api/accounts/invites")
+def api_invites_list():
+    con = state()
+    try:
+        return {"invites": accounts.list_invites(con), "email_enabled": bool(cfg.source("email"))}
+    finally:
+        con.close()
+
+
+@app.post("/api/accounts/invites")
+async def api_invites_create(request: Request):
+    """{role, can_request, can_download, can_upload, adult_allowed, days, email?, note?, link_base}
+    -> {url}. link_base is the address the inviter is using (the invitee must be able to reach it)."""
+    body = await request.json()
+    me = _account(request)
+    link_base = (body.get("link_base") or "").split("#")[0]
+    if not link_base.startswith(("http://", "https://")):
+        raise HTTPException(400, "link_base (the Omnarr address to put in the link) is required")
+    con = state()
+    try:
+        token = accounts.create_invite(con, me["id"], body, body.get("days") or 7, body.get("email"), body.get("note"))
+    finally:
+        con.close()
+    url = f"{link_base}#invite={token}"
+    emailed, message = False, ""
+    to = (body.get("email") or "").strip()
+    if to:
+        if not cfg.source("email"):
+            message = "Email isn't set up (Settings → Connections → Email), so copy the link instead."
+        else:
+            from . import mailer
+            try:
+                await asyncio.to_thread(mailer.send, cfg.source("email"), to, f"{me['username']} invited you to Omnarr",
+                                        f"{me['username']} has invited you to their media library on Omnarr.\n\n"
+                                        f"Choose a username and password here (the link works once and expires in "
+                                        f"{int(body.get('days') or 7)} days):\n\n{url}\n")
+                emailed, message = True, f"Invitation emailed to {to}."
+            except Exception as e:
+                message = f"Couldn't send the email ({type(e).__name__}: {str(e)[:150]}). Copy the link instead."
+    live._audit(STATE, "invite.create", {"by": me["username"], "email": to or None,
+                                          "role": body.get("role") or "member"}, "emailed" if emailed else "link")
+    return {"ok": True, "url": url, "emailed": emailed, "message": message}
+
+
+@app.delete("/api/accounts/invites/{invite_id}")
+def api_invites_revoke(invite_id: int):
+    con = state()
+    try:
+        accounts.revoke_invite(con, invite_id)
+    finally:
+        con.close()
+    return {"ok": True}
+
+
+@app.get("/api/auth/invite/{token}")
+def api_invite_check(token: str, request: Request):
+    _invite_rate(request)
+    con = state()
+    try:
+        row = accounts.find_invite(con, token)
+        inviter = accounts.get(con, row["created_by"]) if row else None
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(404, "This invitation link has expired or was already used")
+    return {"ok": True, "invited_by": inviter["username"] if inviter else None, "expires": row["expires"],
+            "email": row["email"]}
+
+
+@app.post("/api/auth/invite/{token}")
+async def api_invite_accept(token: str, request: Request, response: Response):
+    _invite_rate(request)
+    body = await request.json()
+    con = state()
+    try:
+        aid = accounts.accept_invite(con, token, body.get("username"), body.get("password") or "")
+        acct = accounts.get(con, aid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        con.close()
+    live._audit(STATE, "invite.accept", {"username": acct["username"]}, "ok")
+    _new_session(request, response, aid)
+    return {"ok": True}
+
+
+def _invite_rate(request):
+    ip = "invite:" + (request.client.host if request.client else "?")
+    recent = [t for t in _fails.get(ip, []) if t > time.time() - 300]
+    if len(recent) >= 20:
+        raise HTTPException(429, "Too many attempts; wait 5 minutes")
+    _fails[ip] = recent + [time.time()]
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    acct = _account(request)
+    out = accounts.public(acct)
+    out["uses_server_identity"] = acct["role"] == "admin" and not (acct["jellyfin_user"] and acct["abs_api_key"])
+    return out
+
+
+@app.post("/api/me")
+async def api_me_update(request: Request):
+    """Link your own Jellyfin user and Audiobookshelf API key (so playback and progress are
+    yours). The ABS key is checked before it's saved; a masked key means "keep the stored one"."""
+    acct = _account(request)
+    body = await request.json()
+    fields, message = {}, []
+    if "jellyfin_user" in body:
+        fields["jellyfin_user"] = body["jellyfin_user"]
+        name = (body["jellyfin_user"] or "").strip()
+        if name and cfg.source("jellyfin"):
+            ok, msg = await asyncio.to_thread(registry.BY_KEY["jellyfin"]["test"], {**cfg.source("jellyfin"), "user": name})
+            if not ok:
+                raise HTTPException(400, msg)
+            message.append(f"Jellyfin user {name} linked")
+    key = body.get("abs_api_key")
+    if key is not None and not str(key).startswith("••••"):
+        fields["abs_api_key"] = key
+        if str(key).strip() and cfg.source("abs"):
+            abs_s = cfg.source("abs")
+            ok, msg = await asyncio.to_thread(registry.BY_KEY["abs"]["test"], {"url": abs_s.get("url"), "api_key": str(key).strip()})
+            if not ok:
+                raise HTTPException(400, msg)
+            message.append(msg)
+    con = state()
+    try:
+        accounts.update(con, acct["id"], **fields)
+        out = accounts.public(accounts.get(con, acct["id"]))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        con.close()
+    live.invalidate("jf:")
+    return {"ok": True, "account": out, "message": "; ".join(message) or "Saved"}
+
+
+# ── private (adult) section: a PIN per person; unlock lasts adult.unlock_minutes (default 30) ──
 def _set_adult(request, until):
     con = state()
     with con:
@@ -242,21 +515,29 @@ def _set_adult(request, until):
     con.close()
 
 
-@app.post("/api/adult/setup")
-async def adult_setup(request: Request):
+def _adult_gate(request):
     if not _adult_enabled():
         raise HTTPException(404, "Adult section is disabled")
-    pin = str((await request.json()).get("pin") or "")
-    if not pin.isdigit() or not 4 <= len(pin) <= 12:
-        raise HTTPException(400, "PIN must be 4-12 digits")
+    acct = _account(request)
+    if not acct:
+        raise HTTPException(401, "Sign in first")
+    if not acct["adult_allowed"]:
+        raise HTTPException(403, "The private section isn't enabled for your account")
+    return acct
+
+
+@app.post("/api/adult/setup")
+async def adult_setup(request: Request):
+    acct = _adult_gate(request)
+    pin = (await request.json()).get("pin")
     con = state()
     try:
-        if _setting(con, "adult_pin_hash") is not None:
+        if accounts.get(con, acct["id"])["pin_hash"]:
             raise HTTPException(409, "PIN already set")
-        salt = secrets.token_hex(16)
-        with con:
-            con.execute("INSERT INTO settings VALUES ('adult_pin_salt', ?)", (salt,))
-            con.execute("INSERT INTO settings VALUES ('adult_pin_hash', ?)", (_hash(pin, salt),))
+        try:
+            accounts.set_pin(con, acct["id"], pin)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     finally:
         con.close()
     _set_adult(request, time.time() + 60 * int(cfg.get("adult.unlock_minutes", 30)))
@@ -265,32 +546,28 @@ async def adult_setup(request: Request):
 
 @app.get("/api/adult/status")
 def adult_status(request: Request):
-    con = state()
-    try:
-        has_pin = _setting(con, "adult_pin_hash") is not None
-    finally:
-        con.close()
     sess = _session(request)
-    return {"enabled": _adult_enabled(), "pin_set": has_pin,
+    acct = sess["account"] if sess else None
+    return {"enabled": _adult_enabled(), "allowed": bool(acct and acct["adult_allowed"]),
+            "pin_set": bool(acct and acct["pin_hash"]),
             "unlocked": _adult_ok(sess), "until": (sess or {}).get("adult_until") or 0}
 
 
 @app.post("/api/adult/unlock")
 async def adult_unlock(request: Request):
-    if not _adult_enabled():
-        raise HTTPException(404, "Adult section is disabled")
-    ip = "pin:" + (request.client.host if request.client else "?")
-    recent = [t for t in _fails.get(ip, []) if t > time.time() - 600]
+    acct = _adult_gate(request)
+    key = f"pin:{acct['id']}"
+    recent = [t for t in _fails.get(key, []) if t > time.time() - 600]
     if len(recent) >= 5:
         raise HTTPException(429, "Too many attempts; wait 10 minutes")
     pin = str((await request.json()).get("pin") or "")
     con = state()
     try:
-        salt, want = _setting(con, "adult_pin_salt"), _setting(con, "adult_pin_hash")
+        row = accounts.get(con, acct["id"])
     finally:
         con.close()
-    if not want or not hmac.compare_digest(_hash(pin, salt), want):
-        _fails[ip] = recent + [time.time()]
+    if not accounts.verify_pin(row, pin):
+        _fails[key] = recent + [time.time()]
         raise HTTPException(401, "Wrong PIN")
     _set_adult(request, time.time() + 60 * int(cfg.get("adult.unlock_minutes", 30)))
     return {"ok": True}
@@ -324,7 +601,7 @@ def health():
 @app.get("/api/setup/apps")
 def setup_apps():
     return {"apps": registry.public_specs(cfg.connections(fresh=True)),
-            "options": {"adult_enabled": _adult_enabled()}}
+            "options": {"adult_enabled": _adult_enabled(), **_upload_settings()}}
 
 
 def _settings_from(app_key, body):
@@ -378,24 +655,34 @@ def setup_delete(app_key: str):
 @app.post("/api/setup/options")
 async def setup_options(request: Request):
     body = await request.json()
+    for key in ("upload_dir", "upload_audio_dir"):      # validate before saving anything
+        path = (body.get(key) or "").strip()
+        if path and not (os.path.isdir(path) and os.access(path, os.W_OK)):
+            raise HTTPException(400, f"{path} isn't a writable folder inside Omnarr's container (mount it read-write)")
     con = state()
     with con:
         if "adult_enabled" in body:
             con.execute("INSERT OR REPLACE INTO settings VALUES ('adult_enabled', ?)", ("1" if body["adult_enabled"] else "0",))
+        for key in ("upload_dir", "upload_audio_dir"):
+            if key in body:
+                con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, (body[key] or "").strip()))
+        if "upload_max_mb" in body:
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('upload_max_mb', ?)", (str(max(1, int(body["upload_max_mb"]))),))
     con.close()
-    return {"ok": True, "options": {"adult_enabled": _adult_enabled()}}
+    return {"ok": True, "options": {"adult_enabled": _adult_enabled(), **_upload_settings()}}
 
 
 @app.get("/api/search")
 def api_search(request: Request):
     if not os.path.exists(INDEX):
         raise HTTPException(503, "Index is still being built")
-    return search.search(INDEX, dict(request.query_params), _adult_ok(_session(request)))
+    sess = _session(request)
+    return search.search(INDEX, dict(request.query_params), _adult_ok(sess), account_id=sess["account"]["id"])
 
 
 @app.get("/api/work/{wid}")
 def api_work(wid: str, request: Request):
-    w = search.work(INDEX, wid, _adult_ok(_session(request)))
+    w = search.work(INDEX, wid, _adult_ok(_session(request)), account_id=(_account(request) or {}).get('id'))
     if not w:
         raise HTTPException(404, "Not found")
     return w
@@ -498,7 +785,7 @@ def _related_items(w):
 def api_work_requests(wid: str, request: Request):
     """What can be requested from this item: missing book formats, plus everything related to it
     (same franchise/series, adaptations, what it was based on), matched to the library."""
-    w = search.work(INDEX, wid, _adult_ok(_session(request)))
+    w = search.work(INDEX, wid, _adult_ok(_session(request)), account_id=(_account(request) or {}).get('id'))
     if not w:
         raise HTTPException(404, "Not found")
     out = {"missing_formats": [], "adaptations": [], "shelfmark_enabled": requests_.shelfmark_enabled(cfg),
@@ -554,7 +841,7 @@ async def api_request_screen(request: Request):
 def api_work_live(wid: str, request: Request):
     """Fresh detail from the owning apps: episodes/seasons (TV), file + queue (movies),
     per-app reading positions + chapters (books)."""
-    w = search.work(INDEX, wid, _adult_ok(_session(request)))
+    w = search.work(INDEX, wid, _adult_ok(_session(request)), account_id=(_account(request) or {}).get('id'))
     if not w:
         raise HTTPException(404, "Not found")
     try:
@@ -590,9 +877,14 @@ def api_play_video(item_id: str):
     if not cfg.source("jellyfin"):
         raise HTTPException(404, "Jellyfin not configured")
     try:
-        return play.video_info(cfg, item_id, live._jf_user(cfg))
+        uid = live._jf_user(cfg)                       # this person's Jellyfin user, or None
+        info = play.video_info(cfg, item_id, uid or live._jf_user(cfg, owner=True))
     except Exception as e:
         raise HTTPException(502, f"Jellyfin: {type(e).__name__}: {e}")
+    info["progress_sync"] = bool(uid)
+    if not uid:
+        info["resume"] = 0                             # never someone else's position
+    return info
 
 
 @app.get("/api/play/audio/{item_id}")
@@ -601,6 +893,7 @@ def api_play_audio(item_id: str):
     info = play.audio_info(cfg, item_id) if cfg.source("abs") else None
     if not info:
         raise HTTPException(404, "Not found")
+    info["progress_sync"] = bool(play.abs_token(cfg))
     return info
 
 
@@ -611,7 +904,10 @@ async def api_play_progress(request: Request):
     try:
         pos, dur = float(b.get("position") or 0), float(b.get("duration") or 0)
         if b.get("source") == "jellyfin":
-            ok = play.video_progress(cfg, live._jf_user(cfg), b["item_id"], pos, dur, bool(b.get("finished")))
+            uid = live._jf_user(cfg)
+            if not uid:
+                return {"ok": False, "reason": "Link your Jellyfin user in Settings → My accounts to save progress"}
+            ok = play.video_progress(cfg, uid, b["item_id"], pos, dur, bool(b.get("finished")))
         elif b.get("source") == "abs":
             ok = play.audio_progress(cfg, b["item_id"], pos, dur, bool(b.get("finished")))
         else:
@@ -634,7 +930,8 @@ async def api_play_stop(request: Request):
     return {"ok": True}
 
 
-PASS_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag")
+PASS_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag",
+                "content-disposition")
 
 
 async def _proxy(url, request, headers):
@@ -672,8 +969,122 @@ async def api_stream_jf(path: str, request: Request):
 async def api_stream_abs(item_id: str, ino: str, request: Request):
     if not cfg.source("abs"):
         raise HTTPException(404, "Audiobookshelf not configured")
-    tok = play.abs_token(cfg)
+    tok = play.abs_token(cfg, owner=True)              # reading files uses the server's key
     return await _proxy(f"{play.abs_base(cfg)}/api/items/{item_id}/file/{ino}", request, {"Authorization": f"Bearer {tok}"})
+
+
+# ── save to device (can_download) ────────────────────────────────────────────
+@app.get("/api/download/{unit_key:path}")
+async def api_download(unit_key: str, request: Request, format: str = ""):
+    """The original file of one edition (an ebook, read-along, audiobook, comic, movie or game)."""
+    from . import files
+    from urllib.parse import quote
+    sess = _session(request)
+    con = search.connect(INDEX)
+    try:
+        e = con.execute("""SELECT e.source, e.source_id, e.title, e.extra, w.kind, w.adult FROM editions e
+                           JOIN works w ON w.id=e.work_id WHERE e.unit_key=?""", (unit_key,)).fetchone()
+    finally:
+        con.close()
+    if not e or (e["adult"] and not _adult_ok(sess)):
+        raise HTTPException(404, "Not found")
+    if e["source"] not in files.DOWNLOADABLE or not cfg.source(e["source"]):
+        raise HTTPException(400, "This item can't be downloaded")
+    extra = json.loads(e["extra"] or "{}")
+    try:
+        if e["source"] == "calibre":
+            f = files.calibre(cfg, e["source_id"], format)
+        elif e["source"] == "storyteller":
+            f = files.storyteller(cfg, e["source_id"])
+        elif e["source"] == "abs":
+            f = await asyncio.to_thread(files.abs_item, cfg, e["source_id"], play.abs_token(cfg, owner=True))
+        elif e["source"] == "komga":
+            f = files.komga_book(cfg, e["source_id"])
+        elif e["source"] == "jellyfin":
+            f = files.jellyfin_item(cfg, e["source_id"], e["kind"])
+        else:
+            f = files.romm_rom(cfg, e["source_id"], extra.get("fs_name"))
+    except files.NotDownloadable as ex:
+        raise HTTPException(400, str(ex))
+    live._audit(STATE, "download", {"by": sess["account"]["username"], "title": e["title"], "source": e["source"]}, "ok")
+    if "path" in f:
+        return FileResponse(f["path"], filename=f["filename"])
+    resp = await _proxy(f["url"], request, f["headers"])
+    if f.get("filename"):
+        resp.headers["content-disposition"] = f"attachment; filename*=UTF-8''{quote(f['filename'])}"
+    return resp
+
+
+# ── uploads (can_upload): into drop-off folders an admin chooses ────────────
+UPLOAD_TYPES = {"book": {"epub", "kepub", "azw3", "mobi", "pdf", "fb2", "djvu", "cbz", "cbr", "cb7"},
+                "audio": {"m4b", "m4a", "mp3", "aac", "flac", "ogg", "opus"}}
+
+
+def _upload_settings():
+    con = state()
+    try:
+        return {"upload_dir": _setting(con, "upload_dir") or "", "upload_audio_dir": _setting(con, "upload_audio_dir") or "",
+                "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048)}
+    finally:
+        con.close()
+
+
+@app.get("/api/upload")
+def api_upload_info():
+    s = _upload_settings()
+    return {"books_enabled": bool(s["upload_dir"]), "audio_enabled": bool(s["upload_audio_dir"]),
+            "max_mb": s["upload_max_mb"], "types": {k: sorted(v) for k, v in UPLOAD_TYPES.items()}}
+
+
+@app.post("/api/upload")
+async def api_upload(request: Request):
+    """Multipart upload of one or more files. Ebooks and comics go to the books drop-off folder
+    (e.g. your Calibre-Web-Automated ingest), audiobooks to the audio folder (a folder each)."""
+    from . import files
+    s = _upload_settings()
+    me = _account(request)["username"]
+    form = await request.form()
+    results = []
+    for item in form.getlist("files"):
+        name = files.safe_name(getattr(item, "filename", "") or "upload")
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        kind = next((k for k, exts in UPLOAD_TYPES.items() if ext in exts), None)
+        dest = {"book": s["upload_dir"], "audio": s["upload_audio_dir"]}.get(kind or "")
+        if not kind:
+            results.append({"file": name, "ok": False, "message": f".{ext or '?'} files aren't accepted"})
+            continue
+        if not dest or not os.path.isdir(dest):
+            results.append({"file": name, "ok": False, "message": "Uploads for this type aren't set up (ask an admin)"})
+            continue
+        if kind == "audio":                        # Audiobookshelf wants a folder per book
+            dest = os.path.join(dest, "Uploads", name.rsplit(".", 1)[0])
+            os.makedirs(dest, exist_ok=True)
+        final = os.path.join(dest, name)
+        n = 2
+        while os.path.exists(final):
+            stem, dot, e2 = name.rpartition(".")
+            final = os.path.join(dest, f"{stem} ({n}).{e2}")
+            n += 1
+        tmp = final + ".part"                      # ingest tools skip .part files until renamed
+        size, limit = 0, s["upload_max_mb"] * 1024 * 1024
+        try:
+            with open(tmp, "wb") as out:
+                while chunk := await item.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        raise ValueError(f"larger than {s['upload_max_mb']} MB")
+                    out.write(chunk)
+            os.replace(tmp, final)
+        except Exception as ex:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            results.append({"file": name, "ok": False, "message": f"Upload failed: {ex}"})
+            continue
+        live._audit(STATE, "upload", {"by": me, "file": os.path.basename(final), "bytes": size, "kind": kind}, "ok")
+        results.append({"file": os.path.basename(final), "ok": True, "message": "Uploaded; it appears after the next library scan"})
+    if not results:
+        raise HTTPException(400, "No files received (field name: files)")
+    return {"ok": all(r["ok"] for r in results), "results": results}
 
 
 @app.get("/api/activity")
@@ -765,7 +1176,7 @@ async def api_book_download(request: Request):
         wanted.add(STATE, (w or {}).get("title") or body.get("title") or rel.get("title") or "",
                    ((w or {}).get("authors") or [body.get("author") or ""])[0],
                    fmt, work_id=(w or {}).get("id"), provider=body.get("provider"), book_id=body.get("book_id"),
-                   current=rel.get("source_id"), current_title=rel.get("title"))
+                   current=rel.get("source_id"), current_title=rel.get("title"), account_id=(_account(request) or {}).get("id"))
     return out
 
 
@@ -787,7 +1198,7 @@ async def api_wanted_add(request: Request):
     if not w or fmt not in wanted.FORMATS:
         raise HTTPException(400, "work (or title) and format (ebook|audiobook|comic) required")
     wid = wanted.add(STATE, w["title"], (w["authors"] or [""])[0], fmt, work_id=w["id"],
-                     provider=body.get("provider"), book_id=body.get("book_id"))
+                     provider=body.get("provider"), book_id=body.get("book_id"), account_id=_account(request)["id"])
     threading.Thread(target=_wanted_tick, daemon=True).start()       # first search right away
     return {"ok": True, "id": wid}
 
