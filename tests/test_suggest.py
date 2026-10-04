@@ -85,3 +85,21 @@ def test_guests_get_their_own_suggestions(env):
     main, admin, guest = env
     s = _sections(guest, main, 2)
     assert "screen" not in s and "up_next" not in s                     # no history, and the owner's screens aren't theirs
+
+
+def test_variety_released_and_language_rules():
+    from app import suggest
+    works = {"got": {"id": "got", "kind": "book", "title": "A Game of Thrones", "series_key": "", "authors": "[]"}}
+    seeds = {"got": 1.0}
+    related = [{"kind": "book", "label": f"Tale {i}", "year": 2000 + i, "wikidata": f"Q{i}"} for i in range(6)]
+    related += [{"kind": "book", "label": "The Winds of Winter", "year": None, "wikidata": "Qw"},
+                {"kind": "book", "label": "Future Book", "year": suggest.THIS_YEAR + 2, "wikidata": "Qf"},
+                {"kind": "tv", "label": "Kampen om jerntronen", "year": 2012, "wikidata": "Qn"}]   # no TMDB id
+    out = suggest.worlds(works, seeds, lambda w: related, lambda it: None)
+    titles = [o["external"]["title"] for o in out]
+    assert titles == ["Tale 0", "Tale 1", "Tale 2"]                     # three per title, released only
+    recs = lambda kind, tmdb: [{"kind": "movie", "tmdb": n, "title": f"M{n}", "year": 2010} for n in range(6)]
+    picks = suggest.screen_picks({}, {}, recs, lambda it: None, [("a", "movie", "1", 1.0, "Revenge of the Sith")])
+    assert len(picks) == 3                                              # not a whole row from one film
+    assert suggest.FOREIGN.search("Onyx Storm - Version française: The Empyrean Tome 3")
+    assert not suggest.FOREIGN.search("Onyx Storm")

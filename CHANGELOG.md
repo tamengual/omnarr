@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 — 2026-10-04
+
+- Suggestions are more varied:
+  - at most three picks are credited to any one title;
+  - unreleased books and other-language editions are left out;
+  - related movies and shows appear only when they can be requested.
+
 ## 0.5.0 — 2026-10-04
 
 - **Read-alongs in Omnarr.** Storyteller books play with the narration and highlight the

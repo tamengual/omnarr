@@ -24,6 +24,10 @@ from . import normalize
 from .search import summary
 
 KINDS = ("book", "comic", "movie", "show")
+# Another-language edition of a book you have in English ("Onyx Storm - Version française")
+FOREIGN = re.compile(r"version fran[cç]aise|[ée]dition fran[cç]aise|\b(french|spanish|german|italian) edition\b|edici[oó]n|ausgabe|\btome \d", re.I)
+PER_SEED = 3                                       # variety: at most this many picks credited to one title
+THIS_YEAR = time.gmtime().tm_year
 BUNDLE = re.compile(r"\b(box(ed)? set|bundle|omnibus|collection|books? \d+\s*[-–]\s*\d+|\d+-book)\b", re.I)
 PER_SECTION = 18
 VERB = {"book": "read", "comic": "read", "movie": "watched", "show": "watched"}
@@ -114,7 +118,8 @@ def up_next(works, seeds):
             continue
         last = max(done, key=lambda w: w["series_index"])
         ahead = sorted((w for w in members if w["series_index"] > last["series_index"]
-                        and (w.get("status") or "unread") == "unread"), key=lambda w: w["series_index"])
+                        and (w.get("status") or "unread") == "unread" and not FOREIGN.search(w.get("title") or "")),
+                       key=lambda w: w["series_index"])
         if not ahead:
             continue
         nxt = ahead[0]
@@ -136,7 +141,7 @@ def from_library(works, seeds, prof, skip=()):
     for wid, w in works.items():
         if wid in seeds or wid in skip or (w.get("status") or "unread") != "unread":
             continue
-        if w.get("series_key") in started_series or BUNDLE.search(w.get("title") or ""):
+        if w.get("series_key") in started_series or BUNDLE.search(w.get("title") or "") or FOREIGN.search(w.get("title") or ""):
             continue                               # "Up next"'s job / box sets of what you've read
         names = [a.strip().lower() for a in json.loads(w.get("authors") or "[]")]
         a_score = sat(max((authors.get(n, 0) for n in names), default=0))
@@ -191,21 +196,32 @@ def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_see
             t = tally.setdefault(k, {"item": rec, "score": 0.0, "because": []})
             t["score"] += weight
             t["because"].append((weight, label))
-    out = []
-    for t in sorted(tally.values(), key=lambda t: -t["score"])[:PER_SECTION]:
+    out, credited = [], Counter()
+    for t in sorted(tally.values(), key=lambda t: -t["score"]):
         label = max(t["because"])[1]
+        if credited[label] >= PER_SEED:
+            continue
+        credited[label] += 1
         out.append({"external": t["item"], "reason": f"Because of {label}", "score": round(t["score"], 3)})
+        if len(out) >= PER_SECTION:
+            break
     return out
 
 
-def worlds(works, seeds, related_for, match_library, n_seeds=8, skip_tmdb=()):
-    """Adaptations and companions of loved books/comics/screens that you don't have yet."""
+def worlds(works, seeds, related_for, match_library, n_seeds=12, skip_tmdb=()):
+    """Adaptations and companions of loved books/comics/screens that you don't have yet: already
+    released, screens only when TMDB knows them (so they can be requested), a few per title."""
     out, seen = [], set(skip_tmdb)
     for wid in top_seeds(works, seeds, ("book", "comic", "movie", "show"), n_seeds):
         seed = works[wid]
+        taken = 0
         for it in related_for(seed) or []:
             if it["kind"] not in ("movie", "tv", "book", "comic") or match_library(it):
                 continue
+            if not it.get("year") or it["year"] > THIS_YEAR or (it["kind"] in ("movie", "tv") and not it.get("tmdb")):
+                continue
+            if taken >= PER_SEED:
+                break
             key = (it["kind"], str(it.get("tmdb") or it.get("wikidata") or it["label"]))
             if key in seen:
                 continue
@@ -214,6 +230,7 @@ def worlds(works, seeds, related_for, match_library, n_seeds=8, skip_tmdb=()):
                                      "authors": it.get("authors") or [], "url": it.get("url"), "wikidata": it.get("wikidata"),
                                      "status": it.get("status") or "unknown", "poster": it.get("poster") or ""},
                         "reason": f"From the world of {seed['title']}", "score": round(seeds[wid], 3)})
+            taken += 1
             if len(out) >= PER_SECTION:
                 return out
     return out
@@ -238,7 +255,7 @@ def series_gaps(works, seeds, related_for, match_library, n_series=6):
     for key in [k for k in order if k not in owned_ahead][:n_series]:
         last = max(by_series[key], key=lambda x: (x.get("series_index") or 0, x.get("year") or 0))
         later = [it for it in related_for(last) or [] if it["kind"] == last["kind"] and it.get("year")
-                 and last.get("year") and it["year"] >= last["year"] and not match_library(it)
+                 and last.get("year") and last["year"] <= it["year"] <= THIS_YEAR and not match_library(it)
                  and normalize.key(it["label"]) != normalize.key(last["title"])]
         if not later:
             continue
