@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 — 2026-10-04
+
+Audiobook playback on phones:
+
+- **Resuming after a pause reconnects.** Phones drop the stream while it's paused (earbud out, lock screen), and resuming on the dead connection looked like playing with no sound. Omnarr now reloads the stream at the same spot when you resume after a pause, retries quietly after a dropped connection, and a watchdog reconnects if playback says it's playing but isn't moving.
+- **Earbuds back in / lock-screen Play always resume**, including from that stuck state.
+- **No more blank screen when reopening the home-screen app** on a slow connection: the app waits at most 3 seconds for the server, then opens from its saved copy.
+- The offline helper no longer sits between the player and audio/video streams (Safari mishandles that); it only handles the app itself and books saved for offline.
 ## 0.5.4 — 2026-10-04
 
 - Fixed: videos that need transcoding didn't play in current Chrome. Chrome now claims it can play HLS streams itself but fails on them; Omnarr uses its built-in HLS player wherever it works and falls back to the browser's own only when needed (older iPhones).
