@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 — 2026-10-04
+
+- Fixed: videos that need transcoding didn't play in current Chrome. Chrome now claims it can play HLS streams itself but fails on them; Omnarr uses its built-in HLS player wherever it works and falls back to the browser's own only when needed (older iPhones).
+
 ## 0.5.3 — 2026-10-04
 
 - Related lists and suggestions also skip works Wikidata marks as an edition of another work or as published in another language (e.g. a Norwegian edition of *A Game of Thrones*).
