@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, config as config_mod, identity, indexer, live, normalize, notify, play, playstate, requests_, search, wanted
+from . import accounts, bookbridge_sync, config as config_mod, identity, indexer, live, normalize, notify, play, playstate, requests_, search, wanted
 from .connectors import abs as abs_c, arr, calibre, jellyfin, komga, registry, romm, stash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1070,6 +1070,180 @@ async def api_download(unit_key: str, request: Request, format: str = ""):
     if f.get("filename"):
         resp.headers["content-disposition"] = f"attachment; filename*=UTF-8''{quote(f['filename'])}"
     return resp
+
+
+# ── in-app reading: comics (Komga pages) and ebooks (EPUB) ──────────────────
+# Reading is like playing: anyone signed in can read what they can see. Comic pages stream one
+# at a time; an ebook reader needs the whole EPUB. Positions are kept in Omnarr for everyone and
+# also written to Komga for admins (Komga's API key is the owner's, so never for members).
+
+def _reader_edition(unit_key, request):
+    sess = _session(request)
+    con = search.connect(INDEX)
+    try:
+        e = con.execute("""SELECT e.source, e.source_id, e.title, e.extra, w.title AS work_title, w.adult
+                           FROM editions e JOIN works w ON w.id=e.work_id WHERE e.unit_key=?""", (unit_key,)).fetchone()
+    finally:
+        con.close()
+    if not e or (e["adult"] and not _adult_ok(sess)) or e["source"] not in ("komga", "calibre"):
+        raise HTTPException(404, "Not found")
+    if not cfg.source(e["source"]):
+        raise HTTPException(404, f"{e['source'].title()} is not connected")
+    return e, sess
+
+
+def _owner_identity(sess):
+    return bool(sess) and sess["account"].get("role") == "admin"
+
+
+def _iso_ts(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t or 0))
+
+
+def _bridge_doc(sess, e):
+    """BookBridge's document id when this person's ebook place should sync through it
+    (admins only: the KOSync login is the owner's), else None."""
+    s = cfg.source("bookbridge")
+    if e["source"] != "calibre" or not _owner_identity(sess) or not bookbridge_sync.configured(s):
+        return None
+    return bookbridge_sync.document_for_calibre(s, e["source_id"])
+
+
+def _place_updated(aid, source, item_id):
+    con = playstate._con(STATE)
+    try:
+        r = con.execute("SELECT updated FROM play_progress WHERE account_id=? AND source=? AND item_id=?",
+                        (aid, source, str(item_id))).fetchone()
+        return r["updated"] or 0 if r else 0
+    finally:
+        con.close()
+
+
+@app.get("/api/read/info/{unit_key:path}")
+def api_read_info(unit_key: str, request: Request):
+    """How to read one edition: {mode: pages|epub, title, pages | file_url, resume, next/previous}."""
+    from .connectors import komga
+    e, sess = _reader_edition(unit_key, request)
+    aid = identity.account_id.get()
+    mine = playstate.get_place(STATE, aid, e["source"], e["source_id"])
+    out = {"unit_key": unit_key, "title": e["title"] or e["work_title"], "source": e["source"],
+           "progress_sync": True, "app_sync": False}
+    if e["source"] == "calibre":
+        fmts = set(json.loads(e["extra"] or "{}").get("formats") or [])
+        if not fmts & {"EPUB", "KEPUB"}:
+            raise HTTPException(400, "This book has no EPUB to read in the browser")
+        resume = {"locator": (mine or {}).get("locator"), "xpath": None, "fraction": (mine or {}).get("position") or 0,
+                  "finished": bool(mine and mine["finished"]), "from": "omnarr"}
+        bb_doc = _bridge_doc(sess, e)
+        if bb_doc:
+            out["app_sync"] = True
+            theirs = bookbridge_sync.get_position(cfg.source("bookbridge"), bb_doc)
+            own_at = _place_updated(aid, "calibre", e["source_id"])
+            if theirs and theirs["fraction"] > 0 and (not mine or (theirs["updated"] or 0) > own_at + 5):
+                # BookBridge heard about a newer place (the Kobo, an audiobook...): start there
+                resume.update(locator=None, xpath=theirs["xpath"] or None, fraction=theirs["fraction"],
+                              finished=theirs["fraction"] >= 0.995, **{"from": theirs["device"] or "BookBridge"})
+        out.update(mode="epub", file_url=f"api/read/file/{unit_key}", resume=resume)
+        return out
+    s = cfg.source("komga")
+    if not komga.api_mode(s):
+        raise HTTPException(400, "Reading comics needs a Komga API key (Settings → Connections)")
+    try:
+        with komga.client(s, timeout=30) as c:
+            book = c.get(f"/api/v1/books/{e['source_id']}").json()
+            pages = c.get(f"/api/v1/books/{e['source_id']}/pages").json() if (book.get("media") or {}).get("pagesCount") else []
+            nxt = c.get(f"/api/v1/books/{e['source_id']}/next")
+            prv = c.get(f"/api/v1/books/{e['source_id']}/previous")
+    except Exception as ex:
+        raise HTTPException(502, f"Komga: {type(ex).__name__}: {ex}")
+    media = book.get("media") or {}
+    out["series"] = book.get("seriesTitle") or ""
+    out["next"] = f"komga:{nxt.json()['id']}" if nxt.status_code == 200 else None
+    out["previous"] = f"komga:{prv.json()['id']}" if prv.status_code == 200 else None
+    if not pages and media.get("mediaProfile") == "EPUB":         # a text EPUB kept in Komga
+        out.update(mode="epub", file_url=f"api/read/file/{unit_key}",
+                   resume={"locator": (mine or {}).get("locator"), "fraction": (mine or {}).get("position") or 0,
+                           "finished": bool(mine and mine["finished"])})
+        return out
+    if not pages:
+        raise HTTPException(400, "Komga hasn't analysed this book yet (no pages)")
+    page, finished = (int(mine["position"] or 0), mine["finished"]) if mine else (0, False)
+    when = _iso_ts(_place_updated(aid, "komga", e["source_id"])) if mine else ""
+    rp = book.get("readProgress") or {}
+    if _owner_identity(sess) and rp and str(rp.get("lastModified") or "")[:19] >= when:
+        page, finished = int(rp.get("page") or 0), bool(rp.get("completed"))   # Komga's own reader was later
+    out.update(mode="pages", app_sync=_owner_identity(sess),
+               pages=[{"n": p["number"], "w": p.get("width"), "h": p.get("height")} for p in pages],
+               page_url=f"api/read/page/{e['source_id']}/",
+               resume={"page": max(1, min(page or 1, len(pages))), "finished": finished})
+    return out
+
+
+@app.get("/api/read/page/{book_id}/{n}")
+async def api_read_page(book_id: str, n: int, request: Request):
+    """One comic page image from Komga (1-based)."""
+    _reader_edition(f"komga:{book_id}", request)
+    s = cfg.source("komga") or {}
+    if not s.get("api_key"):
+        raise HTTPException(400, "Reading comics needs a Komga API key")
+    resp = await _proxy(f"{s['url'].rstrip('/')}/api/v1/books/{book_id}/pages/{int(n)}", request,
+                        {"X-API-Key": s["api_key"]})
+    if resp.status_code == 200:
+        resp.headers["cache-control"] = "private, max-age=86400"
+    return resp
+
+
+@app.get("/api/read/file/{unit_key:path}")
+async def api_read_file(unit_key: str, request: Request):
+    """The EPUB behind the ebook reader (Calibre: EPUB, else KEPUB; Komga: the book file)."""
+    from . import files
+    e, _ = _reader_edition(unit_key, request)
+    if e["source"] == "calibre":
+        fmts = set(json.loads(e["extra"] or "{}").get("formats") or [])
+        try:
+            f = files.calibre(cfg, e["source_id"], "EPUB" if "EPUB" in fmts else "KEPUB")
+        except files.NotDownloadable as ex:
+            raise HTTPException(400, str(ex))
+        return FileResponse(f["path"], media_type="application/epub+zip",
+                            headers={"Cache-Control": "private, max-age=3600"})
+    f = files.komga_book(cfg, e["source_id"])
+    resp = await _proxy(f["url"], request, f["headers"])
+    if "content-disposition" in resp.headers:             # read inline, don't save
+        del resp.headers["content-disposition"]
+    return resp
+
+
+@app.post("/api/read/progress")
+async def api_read_progress(request: Request):
+    """{unit_key, page, pages} for comics or {unit_key, fraction, locator} for ebooks; finished optional."""
+    from .connectors import komga
+    b = await request.json()
+    e, sess = _reader_edition(str(b.get("unit_key") or ""), request)
+    finished = bool(b.get("finished"))
+    if b.get("page") is not None:
+        page, pages = max(1, int(b["page"])), max(1, int(b.get("pages") or 1))
+        playstate.record(STATE, identity.account_id.get(), e["source"], e["source_id"], page, pages, finished)
+        finished = finished or page >= pages
+        if e["source"] == "komga" and _owner_identity(sess):
+            def patch():
+                with komga.client(cfg.source("komga"), timeout=15) as c:
+                    c.patch(f"/api/v1/books/{e['source_id']}/read-progress", json={"page": page, "completed": finished})
+            try:
+                await asyncio.to_thread(patch)
+            except Exception as ex:
+                log.warning("komga read-progress failed: %s", ex)
+                return {"ok": True, "app_sync": False}
+        return {"ok": True, "app_sync": e["source"] == "komga" and _owner_identity(sess)}
+    fraction = min(1.0, max(0.0, float(b.get("fraction") or 0)))
+    locator = str(b.get("locator") or "")[:2000] or None
+    playstate.record(STATE, identity.account_id.get(), e["source"], e["source_id"], fraction, 1.0,
+                     finished or fraction >= 0.995, locator=locator)
+    bb_doc = await asyncio.to_thread(_bridge_doc, sess, e)
+    if bb_doc and fraction > 0:
+        xpath = str(b.get("xpath") or "")[:1000]
+        bookbridge_sync.put_position(cfg.source("bookbridge"), bb_doc, 1.0 if finished else fraction,
+                                     xpath if xpath.startswith("/body/DocFragment[") else "")
+    return {"ok": True, "app_sync": bool(bb_doc)}
 
 
 # ── uploads (can_upload): into drop-off folders an admin chooses ────────────

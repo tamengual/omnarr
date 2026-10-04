@@ -24,6 +24,7 @@ import time
 
 from . import normalize
 from .connectors import abs as abs_c, arr, bookbridge, calibre, jellyfin, komga, romm, stash, storyteller
+from .connectors.base import iso_time
 
 log = logging.getLogger("omnarr.indexer")
 
@@ -214,7 +215,7 @@ def build_work(members):
     genres = _pick(members, "genres", abs_first) or []
     tags = sorted({t for u in members for t in u.tags})
     added = min((u.added for u in members if u.added), default="")
-    last = max((u.extra.get("last_listened", "") for u in members), default="")
+    last = max((iso_time(u.extra.get("last_listened")) for u in members), default="")
     return {
         "kind": members[0].kind, "title": title, "sort_title": normalize.sort_title(title),
         "authors": _pick(members, "authors") or [], "narrators": _pick(members, "narrators", abs_first) or [],

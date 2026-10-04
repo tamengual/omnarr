@@ -10,7 +10,7 @@ Omnarr is the front end.
 
 ![Omnarr's home page: search, filters, and Continue for books, audiobooks and TV in progress](docs/images/start.webp)
 
-> Status: early (v0.2). It runs every day on one home server. Expect rough edges, and
+> Status: early (v0.4). It runs every day on one home server. Expect rough edges, and
 > please file issues.
 
 ## What it does
@@ -35,8 +35,10 @@ Omnarr is the front end.
   related list.
 - **Keep looking.** Wanted books are re-searched on a schedule until an acceptable copy turns up.
   "Search harder" runs a free-text Prowlarr search and pushes the release to Sonarr or Radarr.
-- **Play in the browser.** Video plays from Jellyfin (direct or transcoded HLS), and audiobooks
-  from Audiobookshelf with chapters. Progress is saved back to the owning app.
+- **Play and read in the browser.** Video plays from Jellyfin (direct or transcoded HLS), and
+  audiobooks from Audiobookshelf with chapters. Comics from Komga open in a page-by-page reader
+  with spreads and right-to-left, and Calibre EPUBs open in an ebook reader. Everyone's place is
+  saved, and it's written back to the owning app where that app supports it.
   App credentials never reach the browser.
 - **Share it.** Give family and friends their own accounts with exactly the permissions you
   choose: request things, save files to their own device, upload, and the private section.
@@ -68,7 +70,7 @@ Every integration is optional. Connect the ones you use.
 | Calibre (+ Calibre-Web) | Ebooks | `metadata.db`, mounted read-only |
 | Audiobookshelf | Audiobooks, progress, playback | API key |
 | Storyteller | Read-along books | `storyteller.db`, mounted read-only |
-| BookBridge | Cross-app reading positions, format links | `database.db`, mounted read-only |
+| BookBridge | Cross-app reading positions, format links, ebook-reader position sync | `database.db`, mounted read-only; KOSync login for sync |
 | Komga | Comics and manga | API key |
 | Jellyfin | Movies, shows, watched state, playback | API key |
 | Sonarr / Radarr | Episodes and movies, downloads, search | API key |

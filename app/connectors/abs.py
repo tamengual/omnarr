@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from .base import Unit, jlist, ro_connect, year_of
+from .base import Unit, iso_time, jlist, ro_connect, year_of
 
 
 def api_mode(s):
@@ -94,7 +94,7 @@ def _read_api(cfg, s):
                         ids={k: v for k, v in (("isbn", md.get("isbn")), ("audible", md.get("asin"))) if v},
                         match={"inodes": [str(f.get("ino")) for f in files if f.get("ino") is not None]},
                         extra={"subtitle": md.get("subtitle") or "", "cover_path": m.get("coverPath") or "",
-                               "last_listened": str(p.get("lastUpdate")) if p else ""},
+                               "last_listened": iso_time(p.get("lastUpdate")) if p else ""},
                     ))
                 page += 1
                 if not rows or page * 200 >= (d.get("total") or 0):
@@ -151,7 +151,7 @@ def _read_db(cfg, s):
             ids={k: v for k, v in (("isbn", r["isbn"]), ("audible", r["asin"])) if v},
             match={"inodes": [str(f.get("ino")) for f in files if f.get("ino") is not None]},
             extra={"subtitle": r["subtitle"] or "", "cover_path": r["coverPath"] or "",
-                   "last_listened": str(p["updatedAt"]) if p is not None else ""},
+                   "last_listened": iso_time(p["updatedAt"]) if p is not None else ""},
         )
         units.append(u)
     con.close()

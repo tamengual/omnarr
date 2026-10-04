@@ -3,12 +3,28 @@
 API mode (default): /api/v1 with an API key (X-API-Key).
 Database mode (legacy): reads database.sqlite through a read-only mount.
 """
+import re
+
 import httpx
 
 from .base import Unit, ro_connect, year_of
 
 AUTHOR_ROLES = ("writer", "author", "penciller", "artist", "")
 ADULT_AGE = 18   # Komga age rating (ComicInfo "Adults Only 18+" sets 18): behind the private-section PIN
+
+
+# A book title that is only its place in the series ("Part 01", "#3", "Vol. 2") is shown as
+# "Series #1", the usual comic style. ("Series, Part 1" would be trimmed back to just "Series"
+# by the title cleaner, which drops trailing "Part/Book N" from book titles.)
+GENERIC_TITLE = re.compile(r"^(?:part|issue|vol\.?|volume|book|chapter|no\.?|#)?\s*0*(\d+[a-z]?)$", re.I)
+
+
+def display_title(title, series_title):
+    t = (title or "").strip()
+    m = GENERIC_TITLE.match(t)
+    if series_title and m:
+        return f"{series_title} #{m.group(1)}"
+    return t
 
 
 def api_mode(s):
@@ -62,7 +78,8 @@ def _read_api(cfg, s):
             one_shot = (sr.get("booksCount") or 1) == 1 and not sm.get("title")
             units.append(Unit(
                 source="komga", source_id=b["id"], kind="comic", format="comic",
-                title=m.get("title") or b.get("name") or "", authors=authors,
+                title=display_title(m.get("title") or b.get("name") or "", "" if one_shot else series_title),
+                authors=authors,
                 series="" if one_shot else series_title, series_index=m.get("numberSort"),
                 year=year_of(m.get("releaseDate")),
                 description=(m.get("summary") or sm.get("summary") or "").strip(),

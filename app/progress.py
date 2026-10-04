@@ -16,6 +16,8 @@ import time
 
 import httpx
 
+from .connectors.base import iso_time
+
 log = logging.getLogger("omnarr.progress")
 OWNER_ONLY = {"calibre", "storyteller", "komga", "romm", "stash"}
 OWNER = "__owner__"
@@ -67,7 +69,7 @@ def _abs_progress(cfg, api_key):
             if not p.get("libraryItemId"):
                 continue
             pct = min(1.0, (p.get("currentTime") or 0) / p["duration"]) if p.get("duration") else None
-            out[p["libraryItemId"]] = (pct, bool(p.get("isFinished")), str(p.get("lastUpdate") or ""))
+            out[p["libraryItemId"]] = (pct, bool(p.get("isFinished")), iso_time(p.get("lastUpdate")))
         return out
 
 
@@ -146,7 +148,7 @@ def build(cfg, state_path, editions):
             if got[0] is not None:
                 cur[0] = max(cur[0] or 0, got[0])
             cur[1] = cur[1] or got[1]
-            cur[2] = max(cur[2], got[2] or "")
+            cur[2] = max(cur[2], iso_time(got[2]))
         for wid, (pct, fin, last) in per_work.items():
             status = "finished" if fin else ("in_progress" if (pct or 0) > 0.005 else "unread")
             rows.append((a["id"], wid, pct, status, last))

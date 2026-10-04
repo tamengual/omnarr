@@ -51,7 +51,16 @@ def _test_storyteller(s):
 
 
 def _test_bookbridge(s):
-    return _sqlite_count(s["db"], "SELECT count(*) FROM books", "linked books")
+    ok, msg = _sqlite_count(s["db"], "SELECT count(*) FROM books", "linked books")
+    if ok and s.get("sync_url"):
+        from .. import bookbridge_sync
+        if not bookbridge_sync.configured(s):
+            return False, "Position sync needs the KOSync username and password too"
+        good, why = bookbridge_sync.check(s)
+        if not good:
+            return False, f"{msg}, but position sync failed: {why}"
+        msg += "; position sync signed in"
+    return ok, msg
 
 
 def _test_abs(s):
@@ -170,8 +179,14 @@ APPS = [
                  "help": "Mount Storyteller's import folder to match read-alongs to audiobooks/ebooks exactly by file."},
                 BROWSER]},
     {"key": "bookbridge", "label": "BookBridge (optional)", "category": "Books", "test": _test_bookbridge,
-     "about": "If you use BookBridge to sync reading positions, Omnarr reuses its book links and shows each app's position.",
-     "fields": [{"key": "db", "label": "database.db path", "type": "path", "required": True, "placeholder": "/src/bookbridge/database.db"}]},
+     "about": "If you use BookBridge to sync reading positions, Omnarr reuses its book links and shows each app's position. "
+              "Add its address and your KOSync login to make Omnarr's ebook reader one of your synced devices (admins).",
+     "fields": [{"key": "db", "label": "database.db path", "type": "path", "required": True, "placeholder": "/src/bookbridge/database.db"},
+                {"key": "sync_url", "label": "Position sync address (optional)", "type": "url", "required": False,
+                 "placeholder": "http://host:8080", "help": "BookBridge's own address. Omnarr reports and reads positions like a KOReader device."},
+                {"key": "kosync_user", "label": "KOSync username", "type": "text", "required": False,
+                 "help": "The KOSync username and password set in BookBridge Settings (the same login your e-reader uses)."},
+                {"key": "kosync_key", "label": "KOSync password", "type": "secret", "required": False}]},
     {"key": "shelfmark", "label": "Shelfmark (book requests)", "category": "Books", "test": _test_shelfmark,
      "about": "Request missing ebooks/audiobooks; Omnarr keeps looking until a good copy arrives.",
      "fields": [URL("Shelfmark", "http://host:8084"), KEY("Set SHELFMARK_API_KEY in Shelfmark's environment, then paste the same value.")]},

@@ -136,6 +136,7 @@ function updatePrivateChrome() {
 }
 
 function leavePrivate(message = "", navigate = true) {
+  window.OmnarrReader?.closeAll();
   clearView();
   privateMode = false;
   params = new URLSearchParams(publicState);
@@ -150,6 +151,7 @@ function leavePrivate(message = "", navigate = true) {
 function enterPrivate() {
   if (!privateUnlocked()) return;
   if (!privateMode) {
+    window.OmnarrReader?.closeAll();
     publicState = new URLSearchParams(params);
     clearView();
     privateMode = true;
@@ -382,6 +384,7 @@ function showAuth(setup, error = "") {
   resetUpload();
   adultEnabled = false;
   window.OmnarrPlayer?.closeAll();
+  window.OmnarrReader?.closeAll();
   ++gateSequence;
   ++adultStatusSequence;
   if (privateMode) leavePrivate("", false);
@@ -525,7 +528,7 @@ for (const key of BOOL_PARAMS) $(`#${key}`).addEventListener("change", (event) =
 $("#clear").addEventListener("click", clearAll);
 $("#home").addEventListener("click", (event) => { event.preventDefault(); if (privateMode) leavePrivate(); else clearAll(); });
 $("#more").addEventListener("click", () => { offset += PAGE; runResults(true); });
-$("#logout").addEventListener("click", async () => { window.OmnarrPlayer?.closeAll(); await api("api/auth/logout", { method: "POST" }); location.reload(); });
+$("#logout").addEventListener("click", async () => { window.OmnarrPlayer?.closeAll(); window.OmnarrReader?.closeAll(); await api("api/auth/logout", { method: "POST" }); location.reload(); });
 $("#reindex").addEventListener("click", async () => {
   $("#reindex").disabled = true;
   try {
@@ -1282,7 +1285,7 @@ function applyAdultOption(enabled) {
     $("#private-dialog").close();
     if (privateMode) leavePrivate("", false);
     privateNotice();
-    if (wasEnabled) window.OmnarrPlayer?.closeAll();
+    if (wasEnabled) { window.OmnarrPlayer?.closeAll(); window.OmnarrReader?.closeAll(); }
   }
   updatePrivateChrome();
   $("#settings-adult").checked = enabled;
@@ -2136,16 +2139,39 @@ function playButton(type, id, label, context = "") {
 }
 
 function playbackActions(work) {
+  const reading = (work.editions || []).filter((edition) => !edition.hidden && (edition.key || edition.source_id != null) &&
+    (edition.source === "komga" || (edition.source === "calibre" && (edition.extra?.formats || []).some((format) => /^(EPUB|KEPUB)$/i.test(format)))));
+  const readButtons = reading.map((edition) => {
+    const key = edition.key || `${edition.source}:${edition.source_id}`;
+    const continuing = work.status === "in_progress" || (!edition.finished && edition.progress > 0);
+    const source = reading.length > 1 ? ` · ${SOURCE[edition.source] || edition.source}` : "";
+    return `<button type="button" class="primary-button live-button" data-read="${esc(key)}" data-read-source="${esc(source)}" data-read-continuing="${continuing}" aria-label="${esc((continuing ? "Continue reading" : "Read") + source + " — " + work.title)}">${continuing ? "Continue reading" : "Read"}${esc(source)}</button>`;
+  }).join("");
   return (work.editions || []).filter((edition) => !edition.hidden && edition.source_id).map((edition) => {
     if (work.kind === "movie" && edition.source === "jellyfin") return playButton("video", edition.source_id, "Play", work.title);
     if (work.kind === "book" && edition.source === "abs") return playButton("audio", edition.source_id, "Listen here", work.title);
     return "";
-  }).join("");
+  }).join("") + readButtons;
 }
 
 function bindPlayback(root, episodes = []) {
   $$("[data-play-video]", root).forEach((button) => button.addEventListener("click", () => window.OmnarrPlayer.openVideo(button.dataset.playVideo, episodes)));
   $$("[data-play-audio]", root).forEach((button) => button.addEventListener("click", () => window.OmnarrPlayer.openAudio(button.dataset.playAudio)));
+}
+
+function bindReading(root, signal) {
+  $$("[data-read]", root).forEach((button) => {
+    button.addEventListener("click", () => window.OmnarrReader.open(button.dataset.read, button));
+    // Only the open work requests resume details, sharing its cancellation lifetime.
+    void window.OmnarrReader.readInfo(button.dataset.read, signal).then((info) => {
+      if (signal.aborted || !button.isConnected) return;
+      const resume = info.resume || {};
+      const continuing = !resume.finished && (resume.page > 1 || resume.fraction > 0 || resume.locator || button.dataset.readContinuing === "true");
+      const position = info.mode === "pages" ? `page ${resume.page || 1} of ${info.pages.length}` : `${Math.round(percent((resume.fraction || 0) * 100))}%`;
+      button.textContent = `${continuing ? "Continue reading" : "Read"}${button.dataset.readSource}${continuing ? ` · ${position}` : ""}`;
+      button.setAttribute("aria-label", `${button.textContent} — ${info.title}`);
+    }).catch(() => { /* Read remains available; opening it shows the endpoint's error. */ });
+  });
 }
 
 async function updatePlaybackLive(data, signal) {
@@ -2407,6 +2433,7 @@ async function openWork(id) {
       </article>`;
     bindCards($("#detail-body"));
     bindPlayback($(".detail-playback", $("#detail-body")));
+    bindReading($(".detail-playback", $("#detail-body")), signal);
     const liveRoot = $(".live-section", $("#detail-body"));
     if (liveRoot) loadLive(liveRoot, id, signal);
     if (requests) loadWorkRequests($(".request-section", $("#detail-body")), id, requests, signal, work);

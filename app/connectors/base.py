@@ -71,6 +71,20 @@ def jlist(value):
         return []
 
 
+def iso_time(value):
+    """Any app timestamp (epoch ms or s, or an ISO string) -> "YYYY-MM-DDTHH:MM:SS" (UTC), or "".
+    Progress is sorted by comparing these as strings, so every source must use this form."""
+    import time as _t
+    if value in (None, ""):
+        return ""
+    s = str(value).strip()
+    if s.replace(".", "", 1).isdigit():
+        n = float(s)
+        n = n / 1000 if n > 1e11 else n
+        return _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(n)) if n > 0 else ""
+    return s.replace(" ", "T")[:19]
+
+
 def year_of(value):
     if value is None:
         return None

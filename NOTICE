@@ -8,3 +8,12 @@ hls.js 1.6.13 (app/static/vendor/hls.min.js)
   https://github.com/video-dev/hls.js
   Licensed under the Apache License, Version 2.0
   https://www.apache.org/licenses/LICENSE-2.0
+
+epub.js 0.3.93 (app/static/vendor/epub.min.js)
+  https://github.com/futurepress/epub.js
+  Licensed under the BSD 2-Clause License
+  https://opensource.org/licenses/BSD-2-Clause
+
+JSZip 3.10.2 (app/static/vendor/jszip.min.js)
+  https://github.com/Stuk/jszip
+  Dual-licensed under the MIT License or GPLv3; used here under GPL-3.0-or-later

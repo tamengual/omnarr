@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0 — 2026-10-04
+
+**Read in Omnarr.** Comics and ebooks now open in Omnarr itself, like video and audiobooks.
+
+- **Comic reader** for everything in Komga (CBZ, CBR, PDF and image EPUBs):
+  - page by page, fit to screen or fit to width;
+  - two-page spreads on wide screens;
+  - right-to-left for manga;
+  - swipe, tap or arrow keys;
+  - "Next" at the end of an issue.
+
+  Pages stream one at a time through Omnarr, so Komga's key never reaches the browser.
+- **Ebook reader** for Calibre EPUBs: a table of contents, font size, light, sepia and dark
+  themes, and paged or scrolling layout.
+- **BookBridge position sync.** Add BookBridge's address and your KOSync login to the BookBridge
+  connection, and the ebook reader becomes one of your synced devices (admins). It opens where
+  your e-reader, Storyteller or Audiobookshelf left off, and where you stop is passed back to all
+  of them.
+- **Everyone's place is saved**, and it feeds Continue like everything else. It's kept in Omnarr
+  under each person's account, so nobody needs a Komga login. For admins, comic pages are also
+  saved to Komga, so Komga's own reader and apps stay in sync.
+- Reading is allowed for everyone who can browse. Note that the ebook reader loads the whole
+  EPUB into the browser. Comics load page by page.
+- Comic issues whose Komga title is just a number ("Part 01") show as "Series #1".
+- Fixed: audiobooks sorted below everything else in Continue (Audiobookshelf's timestamps are
+  now stored the same way as the other apps').
+
 ## 0.3.4 — 2026-10-04
 
 - **Comics you're reading in Komga show up in Continue.** Omnarr now reads Komga's reading
