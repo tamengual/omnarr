@@ -63,6 +63,11 @@ def _test_bookbridge(s):
     return ok, msg
 
 
+def _test_plex(s):
+    from . import plex
+    return plex.test(s)
+
+
 def _test_readmeabook(s):
     from . import readmeabook
     return readmeabook.test(s)
@@ -238,6 +243,14 @@ APPS = [
                 {"key": "username", "label": "Username", "type": "text", "required": False, "placeholder": "you@gmail.com"},
                 {"key": "password", "label": "Password / app password", "type": "secret", "required": False},
                 {"key": "from_address", "label": "Send as", "type": "text", "required": False, "placeholder": "Omnarr <you@gmail.com>"}]},
+    {"key": "plex", "label": "Plex", "category": "Movies & TV", "test": _test_plex,
+     "about": "Movies and shows from Plex: watched state, artwork, and in-browser playback through Omnarr.",
+     "fields": [URL("Plex", "http://host:32400"),
+                {"key": "api_key", "label": "Plex token (optional)", "type": "secret", "required": False,
+                 "help": "Plex Web → any item → ⋯ → Get Info → View XML: the X-Plex-Token in the address. "
+                         "Not needed if Omnarr's address is in Plex's \"allowed without auth\" networks."},
+                {"key": "adult_libraries", "label": "Adult libraries (hidden behind the PIN)", "type": "list", "required": False},
+                BROWSER]},
     {"key": "readmeabook", "label": "ReadMeABook (audiobook requests)", "category": "Books", "test": _test_readmeabook,
      "about": "Send audiobook requests to ReadMeABook instead of Shelfmark: it finds the Audible match, downloads and "
               "imports it. Use an admin's token, so Omnarr's own approvals are the only gate.",

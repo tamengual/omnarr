@@ -10,7 +10,7 @@ import re
 from .connectors.base import ro_connect
 
 EBOOK_ORDER = ("EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "FB2", "TXT")
-DOWNLOADABLE = {"calibre", "storyteller", "abs", "komga", "jellyfin", "romm"}
+DOWNLOADABLE = {"calibre", "storyteller", "abs", "komga", "jellyfin", "plex", "romm"}
 
 
 class NotDownloadable(Exception):
@@ -92,6 +92,21 @@ def jellyfin_item(cfg, item_id, kind):
     s = cfg.source("jellyfin") or {}
     return {"url": f"{s['url'].rstrip('/')}/Items/{item_id}/Download",
             "headers": {"Authorization": f'MediaBrowser Token="{s["api_key"]}"'}, "filename": None}
+
+
+def plex_item(cfg, rating_key, kind):
+    """A Plex movie's original file (Plex's download=1 path)."""
+    if kind != "movie":
+        raise NotDownloadable("Whole shows can't be downloaded; open an episode in Plex instead")
+    from .connectors import plex
+    s = cfg.source("plex") or {}
+    it = plex.metadata(cfg, rating_key) or {}
+    part = ((it.get("Media") or [{}])[0].get("Part") or [{}])[0]
+    if not part.get("key"):
+        raise NotDownloadable("Plex didn't report a file for this movie")
+    h = {k: v for k, v in plex.headers(s).items() if k != "Accept"}
+    return {"url": f"{plex.base(s)}{part['key']}?download=1", "headers": h,
+            "filename": os.path.basename(part.get("file") or "") or None}
 
 
 def romm_rom(cfg, rom_id, fs_name):

@@ -86,10 +86,30 @@ def _jf_episodes(cfg, series_id):
     return out
 
 
+def _plex_episodes(cfg, show_key):
+    """{(season, episode): {play_id, watched, position, title, overview}} from Plex; watched/position
+    are Plex's (owner) for admins and always merged with this person's own Omnarr record."""
+    from .connectors import plex
+    from . import identity, playstate
+    owner = identity.is_admin.get()
+    mine = playstate.for_parent(cfg.state_path, identity.account_id.get(), show_key)
+    out = {}
+    for e in plex.episodes(cfg, show_key):
+        if e["season"] is None or e["episode"] is None:
+            continue
+        pos, fin = mine.get(e["rating_key"], (0, False))
+        out[(e["season"], e["episode"])] = {
+            "play_id": f"plex:{e['rating_key']}", "plex_title": e["title"], "plex_overview": e["summary"][:400],
+            "watched": (e["watched"] if owner else False) or fin,
+            "position": max(e["position"] if owner else 0, pos)}
+    return out
+
+
 # ── TV ───────────────────────────────────────────────────────────────────────
 def show_detail(cfg, editions):
     son = next((e for e in editions if e["source"] == "sonarr"), None)
     jf = next((e for e in editions if e["source"] == "jellyfin"), None)
+    px = next((e for e in editions if e["source"] == "plex"), None)
     jf_link = cfg.link("jellyfin")
     watched = {}
     if jf and cfg.source("jellyfin"):
@@ -97,13 +117,20 @@ def show_detail(cfg, editions):
             watched = _cached(f"jfeps:{_jf_user(cfg)}:{jf['source_id']}", lambda: _jf_episodes(cfg, jf["source_id"]))   # per person
         except Exception as e:
             log.warning("jellyfin episodes failed: %s", e)
+    elif px and cfg.source("plex"):
+        from . import identity
+        try:
+            watched = _cached(f"pxeps:{identity.account_id.get()}:{px['source_id']}", lambda: _plex_episodes(cfg, px["source_id"]))
+        except Exception as e:
+            log.warning("plex episodes failed: %s", e)
     if not son or not cfg.source("sonarr"):
-        # Jellyfin only: what's on disk, with watched state
+        # Jellyfin/Plex only: what's on disk, with watched state
         seasons = {}
         for (s, e), w in sorted(watched.items()):
-            seasons.setdefault(s, []).append({"season": s, "episode": e, "title": "", "has_file": True, **w,
-                                              "url": f"{jf_link}/web/#/details?id={w['jellyfin_id']}" if jf_link else ""})
-        return {"source": "jellyfin", "seasons": [_season(n, eps) for n, eps in seasons.items()], "queue": []}
+            seasons.setdefault(s, []).append({"season": s, "episode": e, "title": w.get("plex_title", ""), "has_file": True,
+                                              "overview": w.get("plex_overview", ""), **w,
+                                              "url": f"{jf_link}/web/#/details?id={w['jellyfin_id']}" if (jf_link and w.get("jellyfin_id")) else ""})
+        return {"source": "jellyfin" if jf else "plex", "seasons": [_season(n, eps) for n, eps in seasons.items()], "queue": []}
 
     sid = int(son["source_id"])
 
@@ -136,7 +163,7 @@ def show_detail(cfg, editions):
             "size": f.get("size") or 0, "overview": (e.get("overview") or "")[:400],
             "sonarr_episode_id": e["id"], "downloading": dl.get(e["id"]),
             "watched": w.get("watched", False), "position": w.get("position", 0),
-            "jellyfin_id": w.get("jellyfin_id"),
+            "jellyfin_id": w.get("jellyfin_id"), "play_id": w.get("play_id") or w.get("jellyfin_id"),
             "url": f"{jf_link}/web/#/details?id={w['jellyfin_id']}" if (jf_link and w.get("jellyfin_id")) else "",
         })
     season_mon = {x["seasonNumber"]: x.get("monitored") for x in series.get("seasons") or []}
@@ -162,7 +189,20 @@ def _season(n, eps, monitored=None):
 def movie_detail(cfg, editions):
     rad = next((e for e in editions if e["source"] == "radarr"), None)
     jf = next((e for e in editions if e["source"] == "jellyfin"), None)
-    out = {"source": "jellyfin" if jf else "radarr"}
+    px = next((e for e in editions if e["source"] == "plex"), None)
+    out = {"source": "jellyfin" if jf else "plex" if px else "radarr"}
+    if px and not jf and cfg.source("plex"):
+        try:
+            from .connectors import plex
+            from . import identity, playstate
+            it = plex.metadata(cfg, px["source_id"]) or {}
+            pos, fin = playstate.get(cfg.state_path, identity.account_id.get(), "plex", px["source_id"])
+            owner = identity.is_admin.get()
+            out.update(play_id=f"plex:{px['source_id']}", watched=(owner and bool(it.get("viewCount"))) or fin,
+                       position=max(((it.get("viewOffset") or 0) / 1000) if owner else 0, pos),
+                       runtime=(it.get("duration") or 0) / 1000)
+        except Exception as e:
+            log.warning("plex movie failed: %s", e)
     if jf and cfg.source("jellyfin"):
         try:
             uid = _jf_user(cfg)

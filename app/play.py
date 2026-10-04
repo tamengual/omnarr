@@ -46,7 +46,7 @@ def _jf_base(cfg):
 
 
 def _strip_key(url):
-    url = re.sub(r"([?&])(api_key|ApiKey)=[^&]*&?", r"\1", url)
+    url = re.sub(r"([?&])(api_key|ApiKey|X-Plex-Token)=[^&]*&?", r"\1", url)
     return url.rstrip("?&")
 
 
@@ -101,10 +101,56 @@ def video_stop(cfg, play_session_id):
         c.delete("/Videos/ActiveEncodings", params={"deviceId": DEVICE_ID, "playSessionId": play_session_id})
 
 
-def rewrite_playlist(text, base=""):
+def plex_video_info(cfg, rating_key, owner):
+    """What the browser should load for a Plex movie/episode: the file itself when browsers can
+    play it (mp4 + h264 + aac/mp3), otherwise Plex's HLS transcode. Both go through Omnarr's
+    proxy (api/stream/plex/...), which adds the token server-side."""
+    from .connectors import plex
+    it = plex.metadata(cfg, rating_key) or {}
+    media = (it.get("Media") or [{}])[0]
+    part = (media.get("Part") or [{}])[0]
+    psid = uuid.uuid4().hex
+    direct = (media.get("container") in ("mp4", "m4v", "mov") and media.get("videoCodec") == "h264"
+              and media.get("audioCodec") in ("aac", "mp3", None))
+    if direct and part.get("key"):
+        url, mode = "api/stream/plex" + part["key"], "direct"
+    else:
+        q = {"path": f"/library/metadata/{rating_key}", "protocol": "hls", "directStream": 1, "directPlay": 0,
+             "mediaIndex": 0, "partIndex": 0, "fastSeek": 0, "copyts": 0, "subtitles": "burn",
+             "session": psid, "transcodeSessionId": psid, "videoResolution": "1920x1080", "maxVideoBitrate": 12000}
+        url, mode = "api/stream/plex/video/:/transcode/universal/start.m3u8?" + "&".join(f"{k}={v}" for k, v in q.items()), "hls"
+    title = it.get("title") or ""
+    if it.get("type") == "episode":
+        title = f"{it.get('grandparentTitle', '')} — S{it.get('parentIndex') or 0:02d}E{it.get('index') or 0:02d} · {title}"
+    return {"type": "video", "mode": mode, "url": url, "play_session_id": f"plex:{psid}", "item_id": f"plex:{rating_key}",
+            "source": "plex", "title": title, "duration": (it.get("duration") or 0) / 1000,
+            "resume": (it.get("viewOffset") or 0) / 1000 if owner else 0, "subtitles": [],
+            "poster": f"api/cover/plex:{it.get('grandparentRatingKey') or rating_key}",
+            "series_id": f"plex:{it['grandparentRatingKey']}" if it.get("grandparentRatingKey") else None}
+
+
+def plex_progress(cfg, rating_key, position, duration, finished):
+    """Save the place in Plex (the token's user = the server's owner)."""
+    from .connectors import plex
+    with plex.client(cfg.source("plex"), 30) as c:
+        if finished or (duration and position >= duration * 0.92):
+            r = c.put("/:/scrobble", params={"identifier": "com.plexapp.plugins.library", "key": rating_key})
+        else:
+            r = c.post("/:/timeline", params={"ratingKey": rating_key, "key": f"/library/metadata/{rating_key}",
+                                              "state": "stopped", "time": int(position * 1000), "duration": int(duration * 1000)})
+    return r.status_code < 400
+
+
+def plex_stop(cfg, psid):
+    from .connectors import plex
+    with plex.client(cfg.source("plex"), 15) as c:
+        c.get("/video/:/transcode/universal/stop", params={"session": psid})
+
+
+def rewrite_playlist(text, base="", prefix="/api/stream/jf"):
     """Remove api_key from every line; make root-relative URLs go through our proxy.
     `base` is the path Omnarr is served under ("" at the site root, HA ingress path, ...)."""
-    proxy = base.rstrip("/") + "/api/stream/jf"
+    proxy = base.rstrip("/") + prefix
     out = []
     for line in text.splitlines():
         if line and not line.startswith("#"):

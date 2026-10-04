@@ -1672,8 +1672,8 @@ $("#settings-adult").addEventListener("change", async (event) => {
 
 function downloadSection(work) {
   if (permissions.can_download !== true || isPrivateWork(work)) return "";
-  const labels = { calibre: "Save ebook", storyteller: "Save read-along", abs: "Save audiobook", komga: "Save comic", jellyfin: "Save movie", romm: "Save game" };
-  const editions = (work.editions || []).filter((edition) => !edition.hidden && edition.key && labels[edition.source] && (edition.source !== "jellyfin" || work.kind === "movie"));
+  const labels = { calibre: "Save ebook", storyteller: "Save read-along", abs: "Save audiobook", komga: "Save comic", jellyfin: "Save movie", plex: "Save movie", romm: "Save game" };
+  const editions = (work.editions || []).filter((edition) => !edition.hidden && edition.key && labels[edition.source] && (!["jellyfin", "plex"].includes(edition.source) || work.kind === "movie"));
   if (!editions.length) return "";
   const rows = editions.map((edition) => {
     const label = labels[edition.source];
@@ -2283,6 +2283,7 @@ function playbackActions(work) {
   }).join("");
   return (work.editions || []).filter((edition) => !edition.hidden && edition.source_id).map((edition) => {
     if (work.kind === "movie" && edition.source === "jellyfin") return playButton("video", edition.source_id, "Play", work.title);
+    if (work.kind === "movie" && edition.source === "plex") return playButton("video", `plex:${edition.source_id}`, "Play", work.title);
     if (work.kind === "book" && edition.source === "abs") return playButton("audio", edition.source_id, "Listen here", work.title);
     return "";
   }).join("") + readButtons;
@@ -2326,11 +2327,11 @@ async function updatePlaybackLive(data, signal) {
   }
   if (data.kind === "show") {
     const episodes = playbackEpisodes(data);
-    const available = episodes.filter((episode) => episode.jellyfin_id && episode.has_file && !episode.watched);
+    const available = episodes.filter((episode) => (episode.play_id || episode.jellyfin_id) && episode.has_file && !episode.watched);
     const next = available.find((episode) => Number(episode.position ?? episode.resume) > 0) || available[0];
     const actions = $(".detail-playback", root);
     if (actions) {
-      actions.innerHTML = next ? playButton("video", next.jellyfin_id, "Play next", `S${next.season}E${next.episode} ${next.title || ""}`) : "";
+      actions.innerHTML = next ? playButton("video", next.play_id || next.jellyfin_id, "Play next", `S${next.season}E${next.episode} ${next.title || ""}`) : "";
       bindPlayback(actions, episodes);
     }
     bindPlayback($("[data-live-content]", root), episodes);
@@ -2424,7 +2425,7 @@ function episodeRow(episode, canManage) {
   const tone = episode.downloading ? "coming" : episode.has_file ? "available" : episode.aired && episode.monitored !== false ? "missing" : "neutral";
   const url = episode.url ? safeUrl(episode.url) : "";
   const actionable = canManage && episode.sonarr_episode_id != null;
-  return `<li class="episode-row"><span class="episode-number">${esc(code)}</span><div class="episode-copy"><h4>${esc(episode.title || "Untitled episode")}</h4><p class="hint">${esc(episode.air_date || "Air date to be announced")}${episode.size ? ` · ${sizeText(episode.size)}` : ""}</p><div class="episode-flags"><span class="state-chip state-${tone}">${esc(state)}</span>${episode.watched ? '<span class="watched-mark">✓ Watched</span>' : episode.position > 0 ? `<span class="hint">Resume at ${timestamp(episode.position)}</span>` : ""}</div>${episode.downloading ? downloadStatus(episode.downloading, `${context} download`) : ""}${episode.overview ? `<details class="episode-overview"><summary>Synopsis</summary><p>${esc(episode.overview)}</p></details>` : ""}</div><div class="episode-actions">${episode.jellyfin_id ? playButton("video", episode.jellyfin_id, "Play", context) : ""}${url ? `<a class="secondary-button live-button" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="Play ${esc(context)} in Jellyfin (opens in a new tab)">Open in Jellyfin ↗</a>` : ""}${actionable ? actionButton("search_episodes", { episode_ids: [episode.sonarr_episode_id] }, "Search", { context }) + monitorButton("monitor_episodes", { episode_ids: [episode.sonarr_episode_id] }, episode.monitored, context) : ""}</div></li>`;
+  return `<li class="episode-row"><span class="episode-number">${esc(code)}</span><div class="episode-copy"><h4>${esc(episode.title || "Untitled episode")}</h4><p class="hint">${esc(episode.air_date || "Air date to be announced")}${episode.size ? ` · ${sizeText(episode.size)}` : ""}</p><div class="episode-flags"><span class="state-chip state-${tone}">${esc(state)}</span>${episode.watched ? '<span class="watched-mark">✓ Watched</span>' : episode.position > 0 ? `<span class="hint">Resume at ${timestamp(episode.position)}</span>` : ""}</div>${episode.downloading ? downloadStatus(episode.downloading, `${context} download`) : ""}${episode.overview ? `<details class="episode-overview"><summary>Synopsis</summary><p>${esc(episode.overview)}</p></details>` : ""}</div><div class="episode-actions">${(episode.play_id || episode.jellyfin_id) ? playButton("video", episode.play_id || episode.jellyfin_id, "Play", context) : ""}${url ? `<a class="secondary-button live-button" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="Play ${esc(context)} in Jellyfin (opens in a new tab)">Open in Jellyfin ↗</a>` : ""}${actionable ? actionButton("search_episodes", { episode_ids: [episode.sonarr_episode_id] }, "Search", { context }) + monitorButton("monitor_episodes", { episode_ids: [episode.sonarr_episode_id] }, episode.monitored, context) : ""}</div></li>`;
 }
 
 function showLive(data) {

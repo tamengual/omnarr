@@ -23,15 +23,15 @@ import sqlite3
 import time
 
 from . import normalize
-from .connectors import abs as abs_c, arr, bookbridge, calibre, jellyfin, komga, romm, stash, storyteller
+from .connectors import abs as abs_c, arr, bookbridge, calibre, jellyfin, komga, plex, romm, stash, storyteller
 from .connectors.base import iso_time
 
 log = logging.getLogger("omnarr.indexer")
 
 CONNECTORS = [("calibre", calibre.read), ("abs", abs_c.read), ("storyteller", storyteller.read),
-              ("jellyfin", jellyfin.read), ("sonarr", arr.read_sonarr), ("radarr", arr.read_radarr),
+              ("jellyfin", jellyfin.read), ("plex", plex.read), ("sonarr", arr.read_sonarr), ("radarr", arr.read_radarr),
               ("komga", komga.read), ("romm", romm.read), ("stash", stash.read)]
-SOURCE_RANK = {"calibre": 0, "abs": 1, "storyteller": 2, "komga": 3, "jellyfin": 4, "sonarr": 5, "radarr": 5,
+SOURCE_RANK = {"calibre": 0, "abs": 1, "storyteller": 2, "komga": 3, "jellyfin": 4, "plex": 4, "sonarr": 5, "radarr": 5,
                "romm": 6, "stash": 7}
 # Formats that describe tracking, not something you can open: never shown as a format badge.
 TRACKING_FORMATS = {"tracked"}

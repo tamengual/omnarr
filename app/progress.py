@@ -19,7 +19,7 @@ import httpx
 from .connectors.base import iso_time
 
 log = logging.getLogger("omnarr.progress")
-OWNER_ONLY = {"calibre", "storyteller", "komga", "romm", "stash"}
+OWNER_ONLY = {"calibre", "storyteller", "komga", "romm", "stash", "plex"}
 OWNER = "__owner__"
 
 
@@ -134,7 +134,7 @@ def build(cfg, state_path, editions):
             else:
                 got = None
             mine = native.get(a["id"], {}).get((u.source, u.source_id))
-            if mine is None and u.source == "jellyfin" and u.kind == "show":
+            if mine is None and u.source in ("jellyfin", "plex") and u.kind == "show":
                 ep = episodes.get(a["id"], {}).get(u.source_id)
                 total = (u.extra or {}).get("episodes") or 0
                 if ep:

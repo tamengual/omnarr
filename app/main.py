@@ -1078,8 +1078,24 @@ _episode_series = {}                                   # Jellyfin episode id -> 
 
 # ── in-app playback ──────────────────────────────────────────────────────────
 @app.get("/api/play/video/{item_id}")
-def api_play_video(item_id: str):
-    """Jellyfin movie/episode id -> {url (direct or HLS through our proxy), resume, subtitles...}."""
+def api_play_video(item_id: str, request: Request):
+    """Jellyfin movie/episode id, or "plex:<ratingKey>" -> {url (direct or HLS through our
+    proxy), resume, subtitles...}."""
+    if item_id.startswith("plex:"):
+        if not cfg.source("plex"):
+            raise HTTPException(404, "Plex not configured")
+        rk = item_id[5:]
+        owner = _owner_identity(_session(request))      # Plex's token is the owner's
+        try:
+            info = play.plex_video_info(cfg, rk, owner)
+        except Exception as e:
+            raise HTTPException(502, f"Plex: {type(e).__name__}: {e}")
+        mine, _ = playstate.get(STATE, identity.account_id.get(), "plex", rk)
+        info["resume"] = max(info["resume"], mine) if owner else mine
+        if info.get("series_id"):
+            _episode_series[item_id] = info["series_id"][5:]
+        info.update(progress_sync=True, app_sync=owner)
+        return info
     if not cfg.source("jellyfin"):
         raise HTTPException(404, "Jellyfin not configured")
     try:
@@ -1115,8 +1131,16 @@ async def api_play_progress(request: Request):
     b = await request.json()
     try:
         pos, dur = float(b.get("position") or 0), float(b.get("duration") or 0)
+        if b.get("source") == "plex":
+            rk = str(b.get("item_id") or "").removeprefix("plex:")
+            playstate.record(STATE, identity.account_id.get(), "plex", rk, pos, dur, bool(b.get("finished")),
+                             parent_id=_episode_series.get(f"plex:{rk}"))
+            ok = True
+            if _owner_identity(_session(request)):
+                ok = await asyncio.to_thread(play.plex_progress, cfg, rk, pos, dur, bool(b.get("finished")))
+            return {"ok": ok}
         if b.get("source") not in ("jellyfin", "abs"):
-            raise HTTPException(400, "source must be jellyfin or abs")
+            raise HTTPException(400, "source must be jellyfin, abs or plex")
         # always kept in Omnarr (so a single Omnarr account is enough)…
         playstate.record(STATE, identity.account_id.get(), b["source"], b["item_id"], pos, dur,
                          bool(b.get("finished")), parent_id=_episode_series.get(b["item_id"]))
@@ -1138,7 +1162,13 @@ async def api_play_progress(request: Request):
 @app.post("/api/play/stop")
 async def api_play_stop(request: Request):
     b = await request.json()
-    if b.get("play_session_id") and cfg.source("jellyfin"):
+    psid = str(b.get("play_session_id") or "")
+    if psid.startswith("plex:") and cfg.source("plex"):
+        try:
+            await asyncio.to_thread(play.plex_stop, cfg, psid[5:])
+        except Exception as e:
+            log.debug("stop plex transcode failed: %s", e)
+    elif psid and cfg.source("jellyfin"):
         try:
             play.video_stop(cfg, b["play_session_id"])
         except Exception as e:
@@ -1150,7 +1180,7 @@ PASS_HEADERS = ("content-type", "content-length", "content-range", "accept-range
                 "content-disposition")
 
 
-async def _proxy(url, request, headers):
+async def _proxy(url, request, headers, prefix="/api/stream/jf"):
     from starlette.background import BackgroundTask
     from fastapi.responses import StreamingResponse
     import httpx as _httpx
@@ -1164,7 +1194,7 @@ async def _proxy(url, request, headers):
     if "mpegurl" in ctype.lower() or url.split("?")[0].lower().endswith(".m3u8"):
         body = await r.aread()
         await r.aclose(); await client.aclose()
-        return Response(play.rewrite_playlist(body.decode("utf-8", "replace"), _base_path(request)), status_code=r.status_code,
+        return Response(play.rewrite_playlist(body.decode("utf-8", "replace"), _base_path(request), prefix), status_code=r.status_code,
                         media_type=ctype or "application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
 
     async def close():
@@ -1179,6 +1209,20 @@ async def api_stream_jf(path: str, request: Request):
     q = play._strip_key(str(request.url.query))
     url = f"{play._jf_base(cfg)}/{path}" + (f"?{q}" if q else "")
     return await _proxy(url, request, play._jf_headers(cfg))
+
+
+@app.get("/api/stream/plex/{path:path}")
+async def api_stream_plex(path: str, request: Request):
+    """Plex files, HLS playlists/segments (relative segment paths resolve back to this route)."""
+    from .connectors import plex
+    s = cfg.source("plex")
+    if not s:
+        raise HTTPException(404, "Plex not configured")
+    if not path.startswith(("library/parts/", "video/:/transcode/")):
+        raise HTTPException(404, "Not found")              # only media, never the rest of Plex's API
+    q = play._strip_key(str(request.url.query))
+    h = {k: v for k, v in plex.headers(s).items() if k != "Accept"}      # media, not JSON
+    return await _proxy(f"{plex.base(s)}/{path}" + (f"?{q}" if q else ""), request, h, "/api/stream/plex")
 
 
 @app.get("/api/stream/abs/{item_id}/{ino}")
@@ -1218,6 +1262,8 @@ async def api_download(unit_key: str, request: Request, format: str = ""):
             f = files.komga_book(cfg, e["source_id"])
         elif e["source"] == "jellyfin":
             f = files.jellyfin_item(cfg, e["source_id"], e["kind"])
+        elif e["source"] == "plex":
+            f = await asyncio.to_thread(files.plex_item, cfg, e["source_id"], e["kind"])
         else:
             f = files.romm_rom(cfg, e["source_id"], extra.get("fs_name"))
     except files.NotDownloadable as ex:
@@ -1813,6 +1859,9 @@ def _cover_original(source, sid, key):
         p = abs_c.cover_file(cfg, sid)
     elif source == "jellyfin":
         return jellyfin.image(cfg, sid, width=THUMB_WIDTH)[0]
+    elif source == "plex":
+        from .connectors import plex
+        return plex.cover_bytes(cfg, sid, width=THUMB_WIDTH)
     elif source in ("sonarr", "radarr"):
         return arr.poster(cfg, source, sid)
     elif source == "romm":

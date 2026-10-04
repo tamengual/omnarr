@@ -98,7 +98,7 @@ window.OmnarrPlayer = (() => {
   // Capture before any source replacement. Errors never become unhandled promises.
   function report(state, keepalive = false) {
     if (!state?.data || !state.started) return Promise.resolve();
-    const payload = { source: state.type === "audio" ? "abs" : "jellyfin", item_id: state.data.item_id, position: position(state), duration: number(state.data.duration), finished: Boolean(state.finished) };
+    const payload = { source: state.data.source || (state.type === "audio" ? "abs" : "jellyfin"), item_id: state.data.item_id, position: position(state), duration: number(state.data.duration), finished: Boolean(state.finished) };
     const version = state.reportVersion = (state.reportVersion || 0) + 1;
     const send = async () => {
       if (version < (state.lastSent || 0)) return;
@@ -274,11 +274,15 @@ window.OmnarrPlayer = (() => {
         $("#video-subtitles").value = showing < 0 ? "off" : String(showing);
       });
       $("#video-next").hidden = !nextEpisode();
-      if (data.mode === "direct" || media.canPlayType("application/vnd.apple.mpegurl")) media.src = data.url;
+      // HLS: prefer hls.js wherever Media Source works. Recent Chrome also claims native HLS
+      // ("maybe"), but its native player fails on transcoder streams; native is only the
+      // fallback for browsers without Media Source (older iPhones).
+      const Hls = data.mode === "hls" ? await loadHls().catch(() => null) : null;
+      if (state !== videoState) return;
+      if (data.mode === "direct") media.src = data.url;
+      else if (!Hls?.isSupported() && media.canPlayType("application/vnd.apple.mpegurl")) media.src = data.url;
       else {
-        const Hls = await loadHls();
-        if (state !== videoState) return;
-        if (!Hls.isSupported()) throw new Error("This browser cannot play this video stream. Try Open in Jellyfin.");
+        if (!Hls?.isSupported()) throw new Error(`This browser cannot play this video stream. Try Open in ${data.source === "plex" ? "Plex" : "Jellyfin"}.`);
         const hls = state.hls = new Hls();
         hls.on(Hls.Events.ERROR, (_event, info) => {
           if (info.fatal && state === videoState) { media.pause(); message(state, "Video streaming stopped. Close and reopen the player to retry."); }

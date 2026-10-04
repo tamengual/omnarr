@@ -14,10 +14,12 @@ OWNER = "__owner__"
 jellyfin_user = contextvars.ContextVar("jellyfin_user", default=OWNER)
 abs_key = contextvars.ContextVar("abs_key", default=OWNER)
 account_id = contextvars.ContextVar("account_id", default=None)
+is_admin = contextvars.ContextVar("is_admin", default=True)       # Plex: its token is the owner's
 
 
 def set_for(account):
     account_id.set(account.get("id") if account else None)
+    is_admin.set(bool(account) and account.get("role") == "admin")
     if not account:
         jellyfin_user.set(None)
         abs_key.set(None)
