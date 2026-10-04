@@ -145,7 +145,11 @@ window.OmnarrPlayer = (() => {
       setMediaSession(state);
     } else pauseState(audioState);
     try { await state.media.play(); }
-    catch (error) { if (error.name !== "AbortError") message(state, "Press Play to start playback. If it still fails, reopen this item."); }
+    catch (error) {
+      if (error.name === "AbortError") return;
+      if (error.name === "NotSupportedError" && state.type === "audio" && state.started) return;   // the error handler reconnects
+      message(state, "Press Play to start playback. If it still fails, reopen this item.");
+    }
   }
 
   function loadHls() {
@@ -328,11 +332,20 @@ window.OmnarrPlayer = (() => {
   // watchdog reconnects if playback claims to play but stops moving.
   const STALE_AFTER = 20_000;                   // a pause longer than this reloads the stream
   const STUCK_AFTER = 8_000;                    // "playing" without moving this long reconnects
+  const LOAD_AFTER = 15_000;                    // a reconnect that hasn't loaded by then tries again
   function reloadAudio(state, wantPlay = true) {
     if (!state?.data) return;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
     const at = position(state);
     state.ready = false;                        // seekAudio then sets a fresh source at `at`
+    state.lastMove = Date.now();
     seekAudio(at, wantPlay);
+  }
+  function giveUpAudio(state) {
+    message(state, "The audiobook stopped streaming. Check your connection, then press Play.");
+    state.wantPlay = false;
+    state.media.pause();
   }
   function streamIsStale(state) {
     const m = state.media;
@@ -346,7 +359,8 @@ window.OmnarrPlayer = (() => {
     state.wantPlay = true;
     state.reconnects = 0;
     // Play pressed while it claims to be playing = stuck: reconnect too.
-    if (state.ready && (!state.media.paused || streamIsStale(state))) reloadAudio(state, true);
+    state.errorRetries = 0;
+    if (!state.ready || !state.media.paused || streamIsStale(state)) reloadAudio(state, true);
     else void play(state);
   }
   function watchAudio(state) {
@@ -356,16 +370,14 @@ window.OmnarrPlayer = (() => {
     state.watchdog = setInterval(() => {
       if (state !== audioState) { clearInterval(state.watchdog); return; }
       const m = state.media;
-      if (!state.wantPlay || !state.ready || m.paused || m.seeking) { state.lastMove = Date.now(); return; }
-      if (m.currentTime !== state.lastTime) { state.lastTime = m.currentTime; state.lastMove = Date.now(); return; }
-      if (Date.now() - state.lastMove < STUCK_AFTER) return;
+      // Watch while it should be playing: loading a (re)connection, or not paused. A seek that
+      // never completes counts as stuck too: its connection died.
+      if (!state.wantPlay || !state.started || state.retryTimer || (state.ready && m.paused)) { state.lastMove = Date.now(); return; }
+      if (state.ready && m.currentTime !== state.lastTime) { state.lastTime = m.currentTime; state.lastMove = Date.now(); return; }
+      if (Date.now() - state.lastMove < (state.ready ? STUCK_AFTER : LOAD_AFTER)) return;
       state.reconnects = (state.reconnects || 0) + 1;
-      if (state.reconnects > 3) {
-        message(state, "The audiobook stopped streaming. Check your connection, then press Play.");
-        state.wantPlay = false; m.pause(); return;
-      }
+      if (state.reconnects > 3) { giveUpAudio(state); return; }
       message(state, "Reconnecting…");
-      state.lastMove = Date.now();
       reloadAudio(state, true);
     }, 2000);
   }
@@ -375,6 +387,7 @@ window.OmnarrPlayer = (() => {
     const state = audioState;
     if (state) {
       clearInterval(state.watchdog);
+      clearTimeout(state.retryTimer);
       void report(state, true);
       audioState = null;
       state.media.pause();
@@ -476,6 +489,7 @@ window.OmnarrPlayer = (() => {
     media.addEventListener("playing", () => {
       if (state !== audioState) return;
       state.errorRetries = 0;
+      state.reconnects = 0;
       if ($("#audio-message").textContent === "Reconnecting…") message(state, "");
     });
     media.addEventListener("pause", () => {
@@ -507,8 +521,16 @@ window.OmnarrPlayer = (() => {
     });
     media.addEventListener("error", () => {
       if (state !== audioState) return;
-      // A dropped connection shows up as a media error: reconnect at the same spot first.
-      if (state.ready && (state.errorRetries = (state.errorRetries || 0) + 1) <= 2) { reloadAudio(state, state.wantPlay); return; }
+      // A dropped connection shows up as a media error (also mid-reconnect): try again at the
+      // same spot, waiting a little longer each time for the connection to come back.
+      if (state.started && (state.errorRetries = (state.errorRetries || 0) + 1) <= 4) {
+        const wantPlay = state.wantPlay;
+        if (wantPlay) message(state, "Reconnecting…");
+        clearTimeout(state.retryTimer);
+        state.retryTimer = setTimeout(() => { if (state === audioState) reloadAudio(state, wantPlay); }, 2000 * state.errorRetries);
+        return;
+      }
+      if (state.started && state.wantPlay) { giveUpAudio(state); return; }
       message(state, "This audio track could not be played. Reopen the book to retry, or use Open in Audiobookshelf.");
     });
     watchAudio(state);

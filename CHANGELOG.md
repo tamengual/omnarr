@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.6 — 2026-10-04
+
+- Audiobooks keep trying to reconnect when the connection drops and comes back: several retries, a little further apart each time, instead of stopping after the first failed attempt.
+- If the stream can't come back, the player pauses and says so, and pressing Play starts it fresh.
+- No more misleading "Press Play to start playback" while it's reconnecting.
+
 ## 0.5.5 — 2026-10-04
 
 Audiobook playback on phones:
@@ -8,6 +14,7 @@ Audiobook playback on phones:
 - **Earbuds back in / lock-screen Play always resume**, including from that stuck state.
 - **No more blank screen when reopening the home-screen app** on a slow connection: the app waits at most 3 seconds for the server, then opens from its saved copy.
 - The offline helper no longer sits between the player and audio/video streams (Safari mishandles that); it only handles the app itself and books saved for offline.
+
 ## 0.5.4 — 2026-10-04
 
 - Fixed: videos that need transcoding didn't play in current Chrome. Chrome now claims it can play HLS streams itself but fails on them; Omnarr uses its built-in HLS player wherever it works and falls back to the browser's own only when needed (older iPhones).
