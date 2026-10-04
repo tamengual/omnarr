@@ -26,6 +26,11 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return;
+  // Only the app shell and the readers' saved-offline URLs are ours. Everything else (audio and
+  // video streams above all, which use Range requests that Safari mishandles behind a service
+  // worker) goes straight to the network without the worker in the way.
+  const inner = url.pathname.slice(base.pathname.length);
+  if (!shellPaths.has(url.pathname) && !inner.startsWith("api/read/")) return;
   event.respondWith((async () => {
     // Bundle URLs are the sole API caching exception. Partial saves have no info marker.
     for (const name of await caches.keys()) {
@@ -46,10 +51,20 @@ self.addEventListener("fetch", (event) => {
     if (!shellPaths.has(url.pathname)) return fetch(request);
     const cache = await caches.open(shellName);
     const cacheKey = new URL(url.pathname, url.origin);
+    // Network first, but never wait long: a phone waking up with a slow connection would
+    // otherwise sit on a blank screen. After 3 s the saved copy is used (and the fresh one
+    // still updates the cache in the background for next time).
+    const network = fetch(request).then(async (response) => {
+      if (response.ok) await cache.put(cacheKey, response.clone());
+      return response;
+    });
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 3000));
     try {
-      const response = await fetch(request);
-      if (response.ok) { await cache.put(cacheKey, response.clone()); return response; }
-      return await cache.match(cacheKey) || response;
+      const first = await Promise.race([network, timeout]);
+      if (first && first.ok) return first;
+      const saved = await cache.match(cacheKey);
+      if (saved) { event.waitUntil(network.catch(() => {})); return saved; }
+      return first || await network;
     } catch (error) {
       const saved = await cache.match(cacheKey);
       if (saved) return saved;
