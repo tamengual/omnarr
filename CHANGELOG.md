@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3 — 2026-10-04
+
+- Related lists and suggestions also skip works Wikidata marks as an edition of another work or as published in another language (e.g. a Norwegian edition of *A Game of Thrones*).
+
 ## 0.5.2 — 2026-10-04
 
 - Related lists and suggestions skip translations and other editions of the same book.

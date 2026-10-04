@@ -18,6 +18,7 @@ import urllib.parse
 import httpx
 
 log = logging.getLogger("omnarr.requests")
+ENGLISH = "Q1860"                                 # Wikidata: English
 
 WIKIDATA = "https://query.wikidata.org/sparql"
 UA = "Omnarr/0.2 (https://github.com/tamengual/omnarr; self-hosted media library)"
@@ -94,14 +95,14 @@ def _classify(types, has):
 def related(state_con, seed_clause, cache_key):
     """[{label, kind, tmdb, igdb, year, wikidata, authors, url}] related to the seed work:
     same franchise / same series, works based on it, and what it is based on."""
-    key = "wdr2:" + cache_key                     # v2: translations/editions filtered out
+    key = "wdr3:" + cache_key                     # v3: translations/editions/other languages filtered out
     row = state_con.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
     if row:
         cached = json.loads(row[0])
         if cached.get("at", 0) > time.time() - RELATED_CACHE_DAYS * 86400:
             return cached["items"]
     q = f"""
-SELECT ?seed ?item ?itemLabel ?typeLabel ?formLabel ?genreLabel ?tmdbm ?tmdbt ?igdb ?d ?authorLabel ?article WHERE {{
+SELECT ?seed ?item ?itemLabel ?typeLabel ?formLabel ?genreLabel ?tmdbm ?tmdbt ?igdb ?d ?authorLabel ?article ?editionOf ?lang WHERE {{
   {seed_clause}
   {{ ?seed wdt:P8345|wdt:P179 ?fr . ?item wdt:P8345|wdt:P179 ?fr . }}
   UNION {{ ?item wdt:P144 ?seed }}
@@ -116,6 +117,8 @@ SELECT ?seed ?item ?itemLabel ?typeLabel ?formLabel ?genreLabel ?tmdbm ?tmdbt ?i
   OPTIONAL {{ ?item wdt:P5794 ?igdb }}
   OPTIONAL {{ ?item wdt:P577|wdt:P580 ?d }}
   OPTIONAL {{ ?item wdt:P50 ?author }}
+  OPTIONAL {{ ?item wdt:P629 ?editionOf }}
+  OPTIONAL {{ ?item wdt:P407 ?lang }}
   OPTIONAL {{ ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> }}
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,mul". }}
 }} LIMIT 1500"""
@@ -144,7 +147,10 @@ def parse_related(data):
             continue
         wid = v["item"].rsplit("/", 1)[-1]
         a = agg.setdefault(wid, {"label": v.get("itemLabel", ""), "types": set(), "genres": set(), "authors": [], "years": set(),
-                                 "tmdbm": None, "tmdbt": None, "igdb": None, "article": None})
+                                 "tmdbm": None, "tmdbt": None, "igdb": None, "article": None, "edition": False, "langs": set()})
+        a["edition"] = a["edition"] or bool(v.get("editionOf"))
+        if v.get("lang"):
+            a["langs"].add(v["lang"].rsplit("/", 1)[-1])
         for k in ("typeLabel", "formLabel"):
             if v.get(k):
                 a["types"].add(v[k])
@@ -163,8 +169,10 @@ def parse_related(data):
         kind = _classify(a["types"], a)
         if any("parody" in g or "fan fiction" in g for g in a["genres"]):
             continue
-        if any("edition" in x.lower() or "translation" in x.lower() for x in a["types"]):
+        if a["edition"] or any("edition" in x.lower() or "translation" in x.lower() for x in a["types"]):
             continue                              # a translation/edition of the seed, not a new work
+        if a["langs"] and ENGLISH not in a["langs"]:
+            continue                              # a work published in another language (e.g. a translation)
         if not kind or re.fullmatch(r"Q\d+", a["label"]):          # unlabelled items are noise
             continue
         items.append({"label": a["label"], "kind": kind, "tmdb": a["tmdbm"] or a["tmdbt"], "igdb": a["igdb"],
