@@ -21,6 +21,9 @@ Omnarr is the front end.
 - **Works, not files.** The ebook (Calibre), audiobook (Audiobookshelf) and read-along
   (Storyteller) of one book appear as **one Book**. Screen adaptations show as separate,
   linked entries. Series and shared universes are shown in reading order.
+
+  <img src="docs/images/book.webp" width="620" alt="The Hobbit's page: the rest of The Lord of the Rings in order, then every screen and game adaptation, each with a Request button">
+
 - **Live details** from the owning app: which episodes you have or are missing, download
   progress, listening and reading positions.
 - **Request from anything:** missing episodes and movies (Sonarr/Radarr/Seerr), the
