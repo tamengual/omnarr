@@ -1,0 +1,134 @@
+# Built-in lists Omnarr ships with, so common book→screen adaptations and shared universes
+# work out of the box. Your own config.yml entries are added on top (a universe with the same
+# name as one here replaces it). Turn these off with `starter_lists: false` in config.yml.
+# Entries only take effect when you actually have the matching items. Corrections welcome.
+
+adaptations:
+  # one book -> its film/show title as Sonarr/Radarr/Jellyfin name it
+  - {book: "Wool", screen: "Silo"}
+  - {book: "The Three-Body Problem", screen: "3 Body Problem"}
+  - {book: "The Hobbit", screen: "The Hobbit"}
+  - {book: "The Hobbit", screen: "The Hobbit: An Unexpected Journey"}
+  - {book: "The Hobbit", screen: "The Hobbit: The Desolation of Smaug"}
+  - {book: "The Hobbit", screen: "The Hobbit: The Battle of the Five Armies"}
+  - {book: "The Fellowship of the Ring", screen: "The Lord of the Rings: The Fellowship of the Ring"}
+  - {book: "The Two Towers", screen: "The Lord of the Rings: The Two Towers"}
+  - {book: "The Return of the King", screen: "The Lord of the Rings: The Return of the King"}
+  - {book: "Harry Potter and the Philosopher's Stone", screen: "Harry Potter and the Philosopher's Stone"}
+  - {book: "Harry Potter and the Sorcerer's Stone", screen: "Harry Potter and the Sorcerer's Stone"}
+  - {book: "Harry Potter and the Chamber of Secrets", screen: "Harry Potter and the Chamber of Secrets"}
+  - {book: "Harry Potter and the Prisoner of Azkaban", screen: "Harry Potter and the Prisoner of Azkaban"}
+  - {book: "Harry Potter and the Goblet of Fire", screen: "Harry Potter and the Goblet of Fire"}
+  - {book: "Harry Potter and the Order of the Phoenix", screen: "Harry Potter and the Order of the Phoenix"}
+  - {book: "Harry Potter and the Half-Blood Prince", screen: "Harry Potter and the Half-Blood Prince"}
+  - {book: "Harry Potter and the Deathly Hallows", screen: "Harry Potter and the Deathly Hallows: Part 1"}
+  - {book: "Harry Potter and the Deathly Hallows", screen: "Harry Potter and the Deathly Hallows: Part 2"}
+  - {book: "The Hunger Games", screen: "The Hunger Games"}
+  - {book: "Catching Fire", screen: "The Hunger Games: Catching Fire"}
+  - {book: "Mockingjay", screen: "The Hunger Games: Mockingjay - Part 1"}
+  - {book: "Mockingjay", screen: "The Hunger Games: Mockingjay - Part 2"}
+  - {book: "The Ballad of Songbirds and Snakes", screen: "The Hunger Games: The Ballad of Songbirds & Snakes"}
+  - {book: "Dune", screen: "Dune"}
+  - {book: "Dune", screen: "Dune: Part Two"}
+  - {book: "Dune Messiah", screen: "Dune: Part Three"}
+  - {book: "Ender's Game", screen: "Ender's Game"}
+  - {book: "The Martian", screen: "The Martian"}
+  - {book: "Project Hail Mary", screen: "Project Hail Mary"}
+  - {book: "Station Eleven", screen: "Station Eleven"}
+  - {book: "The Handmaid's Tale", screen: "The Handmaid's Tale"}
+  - {book: "Good Omens", screen: "Good Omens"}
+  - {book: "Shōgun", screen: "Shōgun"}
+  - {book: "Shogun", screen: "Shōgun"}
+  - {book: "Interview with the Vampire", screen: "Interview with the Vampire"}
+  - {book: "Normal People", screen: "Normal People"}
+  - {book: "Big Little Lies", screen: "Big Little Lies"}
+  - {book: "Red, White & Royal Blue", screen: "Red, White & Royal Blue"}
+  - {book: "Heartstopper", screen: "Heartstopper"}
+  - {book: "Annihilation", screen: "Annihilation"}
+  - {book: "The Road", screen: "The Road"}
+  - {book: "Never Let Me Go", screen: "Never Let Me Go"}
+  - {book: "Do Androids Dream of Electric Sheep?", screen: "Blade Runner"}
+  - {book: "The Man in the High Castle", screen: "The Man in the High Castle"}
+  - {book: "American Gods", screen: "American Gods"}
+  - {book: "The Last of the Mohicans", screen: "The Last of the Mohicans"}
+  - {book: "Altered Carbon", screen: "Altered Carbon"}
+  - {book: "The Queen's Gambit", screen: "The Queen's Gambit"}
+  - {book: "Daisy Jones & The Six", screen: "Daisy Jones & The Six"}
+  - {book: "Lessons in Chemistry", screen: "Lessons in Chemistry"}
+  - {book: "Fellow Travelers", screen: "Fellow Travelers"}
+  - {book: "Call Me by Your Name", screen: "Call Me by Your Name"}
+  - {book: "Brokeback Mountain", screen: "Brokeback Mountain"}
+  # a whole book series -> one show
+  - {series: "Foundation", screen: "Foundation"}
+  - {series: "The Expanse", screen: "The Expanse"}
+  - {series: "A Song of Ice and Fire", screen: "Game of Thrones"}
+  - {series: "The Wheel of Time", screen: "The Wheel of Time"}
+  - {series: "The Witcher", screen: "The Witcher"}
+  - {series: "Outlander", screen: "Outlander"}
+  - {series: "Bridgerton", screen: "Bridgerton"}
+  - {series: "His Dark Materials", screen: "His Dark Materials"}
+  - {series: "Shadow and Bone", screen: "Shadow and Bone"}
+  - {series: "The Grisha", screen: "Shadow and Bone"}
+  - {series: "The Saxon Stories", screen: "The Last Kingdom"}
+  - {series: "The Last Kingdom", screen: "The Last Kingdom"}
+  - {series: "Percy Jackson and the Olympians", screen: "Percy Jackson and the Olympians"}
+  - {series: "The Vampire Chronicles", screen: "Interview with the Vampire"}
+  - {series: "Slough House", screen: "Slow Horses"}
+  - {series: "Jack Reacher", screen: "Reacher"}
+  - {series: "Jack Reacher", screen: "Jack Reacher"}
+  - {series: "Tales of the City", screen: "Tales of the City"}
+  - {series: "The Lord of the Rings", screen: "The Lord of the Rings: The Rings of Power"}
+
+# Shared worlds: several series (and standalones) in one reading order.
+# `order` = titles that take that exact position; `series` = series whose books follow, in the
+# order the series are listed here (then by their own number).
+universes:
+  - name: Foundation Universe
+    author: Isaac Asimov
+    order: [The End of Eternity, "I, Robot", The Caves of Steel, The Naked Sun, The Robots of Dawn,
+            Robots and Empire, The Currents of Space, "The Stars, Like Dust", Pebble in the Sky,
+            Prelude to Foundation, Forward the Foundation, Foundation, Foundation and Empire,
+            Second Foundation, Foundation's Edge, Foundation and Earth]
+    series: [Robot, Galactic Empire, Foundation]
+
+  - name: Middle-earth
+    author: J. R. R. Tolkien
+    order: [The Silmarillion, The Children of Húrin, The Hobbit, The Fellowship of the Ring,
+            The Two Towers, The Return of the King, Unfinished Tales]
+    series: [The Lord of the Rings, Middle-earth]
+
+  - name: The Cosmere
+    author: Brandon Sanderson
+    order: [Elantris, "Mistborn: The Final Empire", The Final Empire, The Well of Ascension,
+            The Hero of Ages, Warbreaker, The Way of Kings, The Alloy of Law, Words of Radiance,
+            Shadows of Self, The Bands of Mourning, Oathbringer, Rhythm of War, The Lost Metal,
+            Tress of the Emerald Sea, Yumi and the Nightmare Painter, The Sunlit Man, Wind and Truth]
+    series: [Mistborn, The Stormlight Archive, Elantris, Warbreaker]
+
+  - name: Dune
+    author: Frank Herbert
+    order: [Dune, Dune Messiah, Children of Dune, God Emperor of Dune, Heretics of Dune,
+            "Chapterhouse: Dune", Chapterhouse Dune]
+    series: [Dune, Dune Chronicles]
+
+  - name: The Enderverse
+    author: Orson Scott Card
+    series: [Ender Quintet, The Ender Quintet, Ender's Saga, Ender Saga, Ender's Game, Ender's Shadow, Shadow, The Shadow Saga, The First Formic War, The Second Formic War]
+
+  - name: Realm of the Elderlings
+    author: Robin Hobb
+    series: [The Farseer Trilogy, Farseer Trilogy, The Liveship Traders, Liveship Traders,
+             The Tawny Man, Tawny Man, The Rain Wild Chronicles, Rain Wild Chronicles,
+             Fitz and the Fool, The Fitz and the Fool Trilogy]
+
+  - name: The Riftwar Cycle
+    author: Raymond E. Feist
+    series: [The Riftwar Saga, Riftwar Saga, The Empire Trilogy, Krondor's Sons, The Serpentwar Saga,
+             The Riftwar Legacy, Legends of the Riftwar, Conclave of Shadows, The Darkwar Saga,
+             The Demonwar Saga, The Chaoswar Saga]
+
+  - name: Hainish Cycle
+    author: Ursula K. Le Guin
+    order: [Rocannon's World, Planet of Exile, City of Illusions, The Left Hand of Darkness,
+            The Word for World Is Forest, The Dispossessed, Four Ways to Forgiveness, The Telling]
+    series: [Hainish Cycle, Hainish]

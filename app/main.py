@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -36,7 +37,13 @@ HA_INGRESS = os.environ.get("OMNARR_HA_INGRESS") == "1"
 NO_PW_HA = "No password is set for direct sign-in yet. Open Omnarr from Home Assistant and set one in Settings → Password."
 INGRESS_PROXY = os.environ.get("OMNARR_INGRESS_PROXY", "172.30.32.2")
 
-app = FastAPI(title="Omnarr", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(_app):
+    _startup()                      # defined at the bottom: starts the indexer + wanted loops
+    yield
+
+
+app = FastAPI(title="Omnarr", docs_url=None, redoc_url=None, lifespan=_lifespan)
 _index_lock = threading.Lock()
 
 
@@ -869,7 +876,6 @@ def _wanted_loop():
         time.sleep(30 * 60)
 
 
-@app.on_event("startup")
 def _startup():
     os.makedirs(os.path.dirname(INDEX) or ".", exist_ok=True)
     threading.Thread(target=_scheduler, name="indexer", daemon=True).start()

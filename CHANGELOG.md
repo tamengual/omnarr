@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 — 2026-10-03
+
+- **Starter lists.** About 70 well-known book→screen adaptations (Silo, Dune, Harry Potter,
+  The Hunger Games, The Expanse, Game of Thrones…) and 8 shared universes (Middle-earth, the
+  Cosmere, Asimov's Foundation universe, Dune, the Enderverse, Realm of the Elderlings, Riftwar,
+  Hainish) work out of the box. Your own `config.yml` lists are added on top, and
+  `starter_lists: false` turns the built-in ones off.
+- Universes order their series as listed, then by number, so a world's series no longer interleave.
+- Housekeeping: modern FastAPI startup (lifespan), and current GitHub Actions versions.
+- The Home Assistant add-on has been tested on a real Home Assistant OS install.
+
 ## 0.2.0 — 2026-10-03
 
 - **Home Assistant add-on** ([omnarr-ha](https://github.com/tamengual/omnarr-ha)). Omnarr opens

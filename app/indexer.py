@@ -270,13 +270,42 @@ def group_screens(units):
     return [[by_key[k] for k in grp] for grp in g.groups()]
 
 
+_STARTER = None
+
+
+def _starter():
+    """Built-in adaptations/universes (app/starter.yml), loaded once."""
+    global _STARTER
+    if _STARTER is None:
+        import yaml
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "starter.yml"), encoding="utf-8") as f:
+                _STARTER = yaml.safe_load(f) or {}
+        except OSError:
+            _STARTER = {}
+    return _STARTER
+
+
+def _list(cfg, key):
+    """config.yml entries first, then the built-in starter entries (unless `starter_lists: false`).
+    A user universe with the same name as a starter one replaces it."""
+    user = list(cfg.get(key) or [])
+    if cfg.get("starter_lists", True) is False:
+        return user
+    starter = _starter().get(key) or []
+    if key == "universes":
+        names = {normalize.normalize_word(u.get("name") or "") for u in user}
+        starter = [u for u in starter if normalize.normalize_word(u.get("name") or "") not in names]
+    return user + starter
+
+
 def _adaptation_links(cfg, works):
     """config `adaptations:` -> [(book_work_id, screen_work_id)].
     Entries: {book: "Wool", screen: "Silo"} or {series: "Foundation", screen: "Foundation"}."""
     out = []
     books = [(wid, w) for wid, w in works.items() if w["kind"] == "book"]
     screens = [(wid, w) for wid, w in works.items() if w["kind"] in ("movie", "show")]
-    for entry in cfg.get("adaptations") or []:
+    for entry in _list(cfg, "adaptations"):
         skey = normalize.key(entry.get("screen", ""))
         targets = [wid for wid, w in screens if normalize.key(w["title"]) == skey]
         if entry.get("year"):
@@ -289,7 +318,8 @@ def _adaptation_links(cfg, works):
             sources = [wid for wid, w in books if normalize.key(w["title"]) == bk]
         for b in sources:
             for t in targets:
-                out.append((b, t))
+                if (b, t) not in out:
+                    out.append((b, t))
     return out
 
 
@@ -323,11 +353,13 @@ def _assign_universes(cfg, works):
     """
     for wid, w in works.items():
         w["universe"], w["universe_index"] = "", None
-    for uni in cfg.get("universes") or []:
+    for uni in _list(cfg, "universes"):
         name = uni.get("name") or ""
         sn = normalize.surname(uni.get("author") or "")
         order = {normalize.key(t): i for i, t in enumerate(uni.get("order") or [])}
-        series = {normalize.normalize_word(s) for s in uni.get("series") or []}
+        series = {}                                  # series name -> position in the list
+        for i, s in enumerate(uni.get("series") or []):
+            series.setdefault(normalize.normalize_word(s), i)
         for wid, w in works.items():
             if w["kind"] != "book" or w["universe"]:
                 continue
@@ -337,8 +369,8 @@ def _assign_universes(cfg, works):
             if k in order:
                 w["universe"], w["universe_index"] = name, float(order[k])
             elif w["series"] and normalize.normalize_word(w["series"]) in series:
-                w["universe"] = name
-                w["universe_index"] = 1000 + (w["series_index"] or 0)
+                w["universe"] = name                 # series in listed order, then by number
+                w["universe_index"] = 1000 + 1000 * series[normalize.normalize_word(w["series"])] + (w["series_index"] or 0)
 
 
 def run(cfg):
