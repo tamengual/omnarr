@@ -1467,13 +1467,11 @@ async function showDevices() {
   const controller = devicesController = new AbortController();
   $("#devices-status").textContent = "Loading…";
   try {
-    const [data, access] = await Promise.all([
-      api("api/devices", { signal: controller.signal }),
-      api("api/private-access", { signal: controller.signal }).catch((error) => { if (error.name === "AbortError") throw error; return { enabled: false }; }),
-    ]);
+    const optional = (path) => api(path, { signal: controller.signal, cache: "no-store" }).catch((error) => { if (error.name === "AbortError") throw error; return { enabled: false }; });
+    const [data, access, myApps] = await Promise.all([api("api/devices", { signal: controller.signal }), optional("api/private-access"), optional("api/my-apps")]);
     if (controller !== devicesController) return;
     $("#devices-status").textContent = "";
-    renderDevices(data, access);
+    renderDevices(data, access, myApps);
   } catch (error) {
     if (controller.signal.aborted || error.message === "login") return;
     $("#devices-status").textContent = error.message;
@@ -1506,12 +1504,44 @@ function privateAccessBody(access, who) {
   return `<p>Some apps (marked “Only on the private network”) work only on ${who}'s private network, run with Tailscale. Ask for access, and once ${who} approves, your invite appears here.</p>${declined}<button class="secondary-button" type="button" data-access-ask>Ask ${who} for access</button><p class="hint" data-access-message role="status" aria-live="polite"></p>`;
 }
 
-function renderDevices(data, access = {}) {
+function koboSteps(endpoint) {
+  return `<h3>Put your Kobo on the library</h3><ol>
+    <li>Plug the Kobo into a computer with its USB cable and tap <em>Connect</em> on the Kobo.</li>
+    <li>Open the <strong>KOBOeReader</strong> drive, then the <code>.kobo</code> folder, then <code>Kobo</code>. The folder is hidden: on Windows use <em>View → Show → Hidden items</em>, on a Mac press <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>.</kbd></li>
+    <li>Open <code>Kobo eReader.conf</code> in a text editor (Notepad or TextEdit). Find the line that starts with <code>api_endpoint=</code> and replace that whole line with:</li></ol>
+    ${deviceAddress(`api_endpoint=${endpoint}`)}
+    <ol start="4"><li>Save the file, eject the Kobo, and tap <em>Sync</em> at the top of its home screen. The library\u2019s books show up under <em>My Books</em>, and your reading place syncs over Wi-Fi.</li></ol>
+    <p class="hint">The Kobo store keeps working. To undo it, change the line back to <code>api_endpoint=https://storeapi.kobo.com</code>.</p>`;
+}
+
+function myAppsBody(my) {
+  const have = (my.apps || []).filter((app) => app.has);
+  const open = (my.apps || []).filter((app) => !app.has && app.available);
+  let body = "<p>Some apps (like Jellyfin on a TV) need their own login. You can make yours here, with your Omnarr username and a password you pick. Omnarr links them to your account, so your place in everything stays yours.</p>";
+  if (have.length) {
+    body += `<ul>${have.map((app) => `<li><strong>${esc(app.label)}:</strong> sign in as <code>${esc(app.login)}</code> with the password you picked.</li>`).join("")}</ul>`;
+    const kobo = have.find((app) => app.kobo_endpoint);
+    if (kobo) body += koboSteps(kobo.kobo_endpoint);
+  }
+  if (open.length) {
+    body += `<form class="my-apps-form" data-my-apps>
+      <fieldset><legend>${have.length ? "Add more" : "Make logins for"}</legend>
+      ${open.map((app) => `<label class="check"><input type="checkbox" name="app" value="${esc(app.key)}" checked><span><strong>${esc(app.label)}</strong> \u2014 ${esc(app.about)}</span></label>`).join("")}</fieldset>
+      <label class="field">Password for these apps<input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label class="field">Type it again<input name="again" type="password" minlength="8" autocomplete="new-password" required></label>
+      <p class="hint">Omnarr doesn\u2019t keep this password. Remember it (or save it in your password manager), because it\u2019s how you sign in to these apps.</p>
+      <button type="submit" class="button">Make my logins</button><p class="hint" role="status" data-my-apps-message></p></form>`;
+  }
+  return body;
+}
+
+function renderDevices(data, access = {}, myApps = {}) {
   const who = data.contact ? esc(data.contact) : "the person who invited you";
   const apps = data.apps || {};
   const canSave = isAdmin() || permissions.can_download === true;
   const library = data.public_url || (viaHomeAssistant ? "" : `${location.origin}${location.pathname}`);
-  const login = (app) => `<p class="hint">This needs its own ${app} login. ${data.login_note ? esc(data.login_note) : `Ask ${who} for one; your Omnarr password doesn't work there.`}</p>`;
+  const selfServe = new Set((myApps.apps || []).filter((app) => app.has || app.available).map((app) => app.label.split(" (")[0]));
+  const login = (app) => `<p class="hint">This needs its own ${app} login. ${selfServe.has(app) ? "Make yours under <em>Your app logins</em> above." : data.login_note ? esc(data.login_note) : `Ask ${who} for one; your Omnarr password doesn't work there.`}</p>`;
   const howToJoin = access.enabled ? (access.state === "connected" ? "You're on it." : "Get access under Private network access above.")
     : (data.network_note ? esc(data.network_note) : `Ask ${who} to add you.`);
   const privateNote = (app) => app?.private ? `<div class="device-note"><strong>Only on the private network.</strong> ${howToJoin} The device you use has to be connected to it.</div>` : "";
@@ -1525,6 +1555,7 @@ function renderDevices(data, access = {}) {
     <p class="hint">It then opens full-screen like any other app, and audiobooks keep playing with the screen locked.</p>`));
 
   if (access.enabled) sections.push(deviceSection("access", "Private network access", privateAccessBody(access, who)));
+  if (myApps.enabled && (myApps.apps || []).length) sections.push(deviceSection("my-apps", "Your app logins", myAppsBody(myApps)));
 
   let read;
   if (canSave) {
@@ -1564,6 +1595,27 @@ function renderDevices(data, access = {}) {
       message.textContent = error.message === "login" ? "Sign in again to ask." : error.message;
     }
   });
+  $("[data-my-apps]", $("#devices-body"))?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const message = $("[data-my-apps-message]", form);
+    const apps = $$("input[name=app]:checked", form).map((box) => box.value);
+    if (!apps.length) { message.textContent = "Pick at least one app."; return; }
+    if (form.elements.password.value !== form.elements.again.value) { message.textContent = "The two passwords don\u2019t match."; return; }
+    $$("input, button", form).forEach((control) => { control.disabled = true; });
+    message.textContent = "Making your logins\u2026 this can take a minute.";
+    try {
+      const result = await api("api/my-apps", { method: "POST", body: JSON.stringify({ apps, password: form.elements.password.value }) });
+      const failed = result.results.filter((r) => !r.ok);
+      await showDevices();
+      const status = $("#devices-status");
+      status.textContent = failed.length ? `Some didn\u2019t work: ${failed.map((r) => `${r.label}: ${r.message}`).join(" \u00b7 ")}. Send ${data.contact || "the server owner"} a screenshot.` : "Done. Your logins are ready.";
+      $("#device-my-apps")?.scrollIntoView({ block: "start" });
+    } catch (error) {
+      $$("input, button", form).forEach((control) => { control.disabled = false; });
+      message.textContent = error.message === "login" ? "Sign in again first." : error.message;
+    }
+  });
   $$("[data-copy]", $("#devices-body")).forEach((button) => button.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "Copied"; }
     catch { const range = document.createRange(); range.selectNodeContents(button.previousElementSibling); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); button.textContent = "Selected"; }
@@ -1572,11 +1624,11 @@ function renderDevices(data, access = {}) {
 }
 
 const DEVICE_FORM_TEXT = ["contact", "login_note", "network_note", "jellyfin_url", "abs_url", "komga_url", "opds_url"];
-const DEVICE_FORM_FLAGS = ["jellyfin_private", "abs_private", "komga_private", "opds_private"];
+const DEVICE_FORM_FLAGS = ["jellyfin_private", "abs_private", "komga_private", "opds_private", "app_signup"];
 function fillDevicesSettings(values = {}) {
   const form = $("#devices-settings-form");
   for (const key of DEVICE_FORM_TEXT) form.elements[key].value = values[key] || "";
-  for (const key of DEVICE_FORM_FLAGS) form.elements[key].checked = Boolean(values[key]);
+  for (const key of DEVICE_FORM_FLAGS) form.elements[key].checked = key === "app_signup" ? values[key] !== false : Boolean(values[key]);
 }
 async function loadDevicesSettings() {
   const controller = settingsController;
@@ -2984,6 +3036,31 @@ function serviceError(value, name) {
   return "";
 }
 
+function sinceLabel(seconds) {
+  const age = Math.max(0, Date.now() / 1000 - (seconds || 0));
+  if (age < 90) return "just now";
+  if (age < 3600) return `${Math.round(age / 60)} min ago`;
+  if (age < 86400) return `${Math.round(age / 3600)} h ago`;
+  return new Date(seconds * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+// Admins only: built from what people play and read inside Omnarr.
+function watchingRow(item, withName) {
+  const where = item.finished ? "finished" : item.percent != null ? `${item.percent}%` : "";
+  const title = item.work_id ? `<button type="button" class="text-button" data-watch-work="${esc(item.work_id)}">${esc(item.title)}</button>` : esc(item.title);
+  return `<li class="watching-row">${item.cover ? `<img src="api/cover/${encodeURIComponent(item.cover)}" alt="" loading="lazy">` : '<span class="watching-cover"></span>'}
+    <div><strong>${withName ? `${esc(item.username)} is ${esc(item.verb)} ` : ""}${title}</strong>
+    <span>${[item.detail, where, item.live ? (withName ? "" : "now") : sinceLabel(item.updated)].filter(Boolean).map(esc).join(" · ")}</span></div></li>`;
+}
+
+function watchingActivity(data) {
+  if (!data) return "";
+  const now = data.now?.length ? `<ul class="watching-list">${data.now.map((item) => watchingRow(item, true)).join("")}</ul>` : '<p class="hint">Nobody is playing or reading anything in Omnarr right now.</p>';
+  const people = (data.people || []).map((person) => `<details class="activity-overflow" data-disclosure="watch-${esc(person.account_id)}"><summary>${esc(person.username)} <span>${esc(sinceLabel(person.last))}</span></summary><ul class="watching-list">${person.recent.map((item) => watchingRow(item, false)).join("")}</ul></details>`).join("");
+  return now + (people ? `<h3>Recent, by person</h3>${people}` : "")
+    + '<p class="hint">Only covers what people play or read inside Omnarr, not in the Jellyfin, Audiobookshelf or Komga apps.</p>';
+}
+
 function activitySection(title, app, body) {
   return `<section class="activity-section"><div class="section-title"><h2>${esc(title)}</h2><span>${esc(app)}</span></div>${body}</section>`;
 }
@@ -3098,7 +3175,8 @@ function renderActivity(data) {
   const focusedAction = document.activeElement.dataset?.wantedAction;
   const games = serviceError(data.games, "ROMarr") || `<h3>Download queue</h3>${genericActivity(data.games?.queue, "Game queue", "No games downloading.")}<details class="activity-overflow" data-disclosure="wanted-games"><summary>Wanted games</summary>${genericActivity(data.games?.wanted, "Wanted games", "No missing games on the wanted list.")}</details>`;
   const logs = serviceError(data.logs, "Logs") || [["readalong_linker", "Read-along linker"], ["stash_identify", "Stash identify"]].map(([key, label]) => `<h3>${label}</h3><pre class="log-tail">${esc(Array.isArray(data.logs?.[key]) && data.logs[key].length ? data.logs[key].join("\n") : "No log lines reported.")}</pre>`).join("");
-  root.innerHTML = activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue())
+  root.innerHTML = (data.watching ? activitySection("Who’s playing", "In Omnarr", watchingActivity(data.watching)) : "")
+    + activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue())
     + activitySection("Downloads", "Sonarr + Radarr", downloadGroups(data))
     + activitySection("Movie & TV requests", "Seerr", requestActivity(data.requests))
     + activitySection("Games", "ROMarr", games)
@@ -3112,6 +3190,7 @@ function renderActivity(data) {
   });
   bindWantedActivity(root, data.wanted_books);
   bindApprovalQueue(root);
+  $$("[data-watch-work]", root).forEach((button) => button.addEventListener("click", () => openWork(button.dataset.watchWork)));
   if (focusedApproval) {
     const row = $$("[data-approval-id]", root).find((node) => node.dataset.approvalId === focusedApproval);
     const control = row && $$("[data-approval-focus], [data-approval-action]", row).find((node) => (node.dataset.approvalFocus || node.dataset.approvalAction) === approvalFocus);

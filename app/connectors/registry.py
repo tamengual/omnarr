@@ -182,6 +182,16 @@ URL = lambda label, ph: {"key": "url", "label": f"{label} address", "type": "url
                          "help": "How Omnarr's server reaches it, e.g. http://nas.local:8989, or http://sonarr:8989 on the same Docker network."}
 KEY = lambda where: {"key": "api_key", "label": "API key", "type": "secret", "required": True, "help": where}
 
+
+def SIGNUP(app, url_key, placeholder):
+    """Optional admin login so people can make their own account in this app (Set up my apps)."""
+    help_ = f"Only needed to let people make their own {app} login from Omnarr. Use an admin account."
+    fields = [{"key": url_key, "label": f"{app} address for Omnarr's server", "type": "url", "required": False,
+               "placeholder": placeholder, "help": help_}] if url_key else []
+    return fields + [{"key": "admin_user", "label": f"{app} admin username (optional)", "type": "text", "required": False,
+                      "help": help_ if not url_key else ""},
+                     {"key": "admin_password", "label": f"{app} admin password", "type": "secret", "required": False}]
+
 APPS = [
     # ── books ──
     {"key": "calibre", "label": "Calibre (ebooks)", "category": "Books", "test": _test_calibre,
@@ -191,7 +201,8 @@ APPS = [
                 {"key": "library", "label": "Library folder", "type": "path", "required": True, "placeholder": "/src/calibre"},
                 {"key": "hide_tags", "label": "Hide books with these tags", "type": "list", "required": False, "placeholder": "not-mine"},
                 {"key": "adult_tags", "label": "Private-section tags (default: NSFW, XXX, 18+)", "type": "list", "required": False, "placeholder": "NSFW"},
-                {**BROWSER, "label": "Calibre-Web address", "help": "Where \"Read\" opens the book, e.g. http://host:8083."}]},
+                {**BROWSER, "label": "Calibre-Web address", "help": "Where \"Read\" opens the book, e.g. http://host:8083."},
+                *SIGNUP("Calibre-Web", "web_url", "http://host:8083")]},
     {"key": "abs", "label": "Audiobookshelf", "category": "Books", "test": _test_abs,
      "about": "Audiobooks, listening progress, and in-app listening.",
      "fields": [URL("Audiobookshelf", "http://host:13378"),
@@ -202,7 +213,7 @@ APPS = [
      "fields": [{"key": "db", "label": "storyteller.db path", "type": "path", "required": True, "placeholder": "/src/storyteller/storyteller.db"},
                 {"key": "library", "label": "Library folder (optional)", "type": "path", "required": False, "placeholder": "/src/storyteller-library",
                  "help": "Mount Storyteller's import folder to match read-alongs to audiobooks/ebooks exactly by file."},
-                BROWSER]},
+                BROWSER, *SIGNUP("Storyteller", "url", "http://host:8001")]},
     {"key": "bookbridge", "label": "BookBridge (optional)", "category": "Books", "test": _test_bookbridge,
      "about": "If you use BookBridge to sync reading positions, Omnarr reuses its book links and shows each app's position. "
               "Add its address and your KOSync login to make Omnarr's ebook reader one of your synced devices (admins).",
@@ -211,7 +222,8 @@ APPS = [
                  "placeholder": "http://host:8080", "help": "BookBridge's own address. Omnarr reports and reads positions like a KOReader device."},
                 {"key": "kosync_user", "label": "KOSync username", "type": "text", "required": False,
                  "help": "The KOSync username and password set in BookBridge Settings (the same login your e-reader uses)."},
-                {"key": "kosync_key", "label": "KOSync password", "type": "secret", "required": False}]},
+                {"key": "kosync_key", "label": "KOSync password", "type": "secret", "required": False},
+                *SIGNUP("BookBridge", None, None)]},
     {"key": "shelfmark", "label": "Shelfmark (book requests)", "category": "Books", "test": _test_shelfmark,
      "about": "Request missing ebooks/audiobooks; Omnarr keeps looking until a good copy arrives.",
      "fields": [URL("Shelfmark", "http://host:8084"), KEY("Set SHELFMARK_API_KEY in Shelfmark's environment, then paste the same value.")]},

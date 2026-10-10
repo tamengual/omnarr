@@ -21,12 +21,16 @@ def _con(state_path):
     con = sqlite3.connect(state_path, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute(SCHEMA)
-    if "locator" not in {r[1] for r in con.execute("PRAGMA table_info(play_progress)")}:
+    cols = {r[1] for r in con.execute("PRAGMA table_info(play_progress)")}
+    if "locator" not in cols:
         con.execute("ALTER TABLE play_progress ADD COLUMN locator TEXT")
+    if "label" not in cols:                       # what was playing, e.g. "Show — S02E05 · Name"
+        con.execute("ALTER TABLE play_progress ADD COLUMN label TEXT")
     return con
 
 
-def record(state_path, account_id, source, item_id, position, duration, finished, parent_id=None, locator=None):
+def record(state_path, account_id, source, item_id, position, duration, finished, parent_id=None, locator=None,
+           label=None):
     if not account_id or not item_id:
         return
     if source in TIMED:
@@ -36,13 +40,13 @@ def record(state_path, account_id, source, item_id, position, duration, finished
     con = _con(state_path)
     with con:
         con.execute("""INSERT INTO play_progress (account_id, source, item_id, parent_id, position, duration,
-                                                  finished, updated, locator) VALUES (?,?,?,?,?,?,?,?,?)
+                                                  finished, updated, locator, label) VALUES (?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(account_id, source, item_id) DO UPDATE SET
                          parent_id=COALESCE(excluded.parent_id, parent_id), position=excluded.position,
                          duration=excluded.duration, finished=MAX(finished, excluded.finished), updated=excluded.updated,
-                         locator=COALESCE(excluded.locator, locator)""",
+                         locator=COALESCE(excluded.locator, locator), label=COALESCE(excluded.label, label)""",
                     (account_id, source, str(item_id), parent_id, max(0.0, position or 0), duration or 0,
-                     int(finished), time.time(), locator))
+                     int(finished), time.time(), locator, label))
     con.close()
 
 

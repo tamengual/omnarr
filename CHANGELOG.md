@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2 — 2026-10-10
+
+- **Make your own app logins.** Under Use on your devices, people can create their own login in Jellyfin, Audiobookshelf, Komga, Calibre-Web, Storyteller, RomM and BookBridge with their Omnarr username and a password they pick (Omnarr doesn't keep it). The logins are linked to their Omnarr account straight away, so their progress lands in their own accounts. Calibre-Web also gives them a personal Kobo sync address, with step-by-step instructions for the Kobo, and BookBridge is set up with their own Audiobookshelf, Calibre-Web and Storyteller logins so their Kobo, audiobook and read-along places stay in step. Adult libraries stay hidden unless they're allowed. Switch it off in Settings → Help for your devices. Calibre-Web, Storyteller and BookBridge need an admin login in their connections; RomM needs a token with users.write. Deleting someone's account also removes the logins made for them.
+- **Who's playing.** Admins see, at the top of Activity, what people are watching, listening to and reading in Omnarr right now (with the episode), and each person's recent history.
+
 ## 1.0.1 — 2026-10-10
 
 - **Ask for private access.** Connect Tailscale (Settings → Connections) and people can ask for private-network access from Use on your devices. You approve it in Activity → Requests; Omnarr then creates a single-use invite that shares just this machine with their own Tailscale account, and shows it to them with setup steps. Removing someone cancels an unused invite, and tells you who to remove in Tailscale if they had already accepted.

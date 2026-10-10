@@ -186,6 +186,19 @@ Jellyfin, Audiobookshelf, Komga and an OPDS catalog, so people can also use thos
 TVs and e-readers. Each section stays hidden until you fill it in. Those apps need their own
 logins, and you can say how people get one.
 
+**People make their own app logins.** On the same page, anyone can create their own login in
+Jellyfin, Audiobookshelf, Komga, Calibre-Web, Storyteller, RomM and BookBridge, with their
+Omnarr username and a password they choose (Omnarr doesn't keep it). The new logins are linked
+to their Omnarr account, and Calibre-Web gives them a personal Kobo sync address with steps for
+the Kobo. Jellyfin, Audiobookshelf, Komga and RomM use the connections you already have (RomM
+needs a token with `users.write`); Calibre-Web, Storyteller and BookBridge need an admin login
+in their connection. Adult libraries stay hidden for people without that permission. Turn it
+off in Settings → Help for your devices. Deleting someone's Omnarr account removes these logins
+too.
+
+**Who's playing.** Admins see, at the top of Activity, what people are watching, listening to
+and reading in Omnarr right now, plus each person's recent history.
+
 **One account is all they need.** Whatever someone plays in Omnarr (position, finished, their
 "Continue" row) is saved in Omnarr under their account. They never have to create Jellyfin
 or Audiobookshelf accounts. If someone already has their own there, they can link it in

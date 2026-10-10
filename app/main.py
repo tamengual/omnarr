@@ -29,7 +29,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import devices, extend, tailnet                  # noqa: E402
+from . import devices, extend, provision, tailnet, watching  # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -388,6 +388,10 @@ def api_accounts_delete(account_id: int, request: Request):
         con.close()
     live._audit(STATE, "account.delete", {"username": row["username"], "by": me["username"]}, "ok")
     message = _revoke_private_access(account_id, row["username"])
+    if provision.mine(STATE, account_id):          # the app logins Omnarr made for them go too
+        left = provision.remove_all(cfg, STATE, account_id)
+        gone = ("Their app logins were removed" + (f", except in {', '.join(left)} (remove those by hand)" if left else "") + ".")
+        message = f"{message} {gone}".strip() if message else gone
     return {"ok": True, **({"message": message} if message else {})}
 
 
@@ -555,6 +559,55 @@ async def api_me_update(request: Request):
     return {"ok": True, "account": out, "message": "; ".join(message) or "Saved"}
 
 
+# ── your own logins in the server's apps ("Set up my apps"); no approval needed ──
+_provision_lock = asyncio.Lock()
+
+
+@app.get("/api/my-apps")
+def api_my_apps(request: Request):
+    acct = _account(request)
+    can, have = provision.ready(cfg), provision.mine(STATE, acct["id"])
+    enabled = _upload_settings()["app_signup"]
+    apps = []
+    for a in provision.ORDER:
+        if not (can.get(a) or a in have):
+            continue
+        extra = have.get(a, {}).get("extra", {})
+        apps.append({"key": a, "label": provision.LABELS[a], "about": provision.ABOUT[a],
+                     "has": a in have, "login": extra.get("login") or have.get(a, {}).get("username", ""),
+                     "kobo_endpoint": extra.get("kobo_endpoint", ""), "available": enabled and bool(can.get(a))})
+    return {"enabled": enabled, "apps": apps, "username": acct["username"]}
+
+
+@app.post("/api/my-apps")
+async def api_my_apps_create(request: Request):
+    acct = _account(request)
+    if not _upload_settings()["app_signup"]:
+        raise HTTPException(403, "Making your own app logins is turned off on this server")
+    body = await request.json()
+    apps = [a for a in body.get("apps") or [] if a in provision.ORDER]
+    if not apps:
+        raise HTTPException(400, "Pick at least one app")
+    person = {**acct, "adult_allowed": bool(acct.get("adult_allowed")) and _adult_enabled()}
+    async with _provision_lock:                        # one person at a time: the apps' admin forms aren't concurrent-safe
+        try:
+            out = await asyncio.to_thread(provision.create, cfg, STATE, person, apps, str(body.get("password") or ""))
+        except provision.Failed as e:
+            raise HTTPException(400, str(e))
+    link = {k: v for k, v in out["link"].items() if not acct.get(k)}      # never replace a login someone linked themselves
+    if link:
+        con = state()
+        try:
+            accounts.update(con, acct["id"], **link)
+        finally:
+            con.close()
+        live.invalidate("jf:")
+    made = [r["app"] for r in out["results"] if r["ok"]]
+    live._audit(STATE, "apps.create", {"username": acct["username"], "apps": made,
+                                       "failed": [r["app"] for r in out["results"] if not r["ok"]]}, "ok" if made else "error")
+    return {"results": out["results"]}
+
+
 # ── private (adult) section: a PIN per person; unlock lasts adult.unlock_minutes (default 30) ──
 def _set_adult(request, until):
     con = state()
@@ -718,6 +771,8 @@ async def setup_options(request: Request):
         for key in ("upload_dir", "upload_audio_dir", "upload_comics_dir"):
             if key in body:
                 con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, (body[key] or "").strip()))
+        if "app_signup" in body:
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('app_signup', ?)", ("1" if body["app_signup"] else "0",))
         if "upload_max_mb" in body:
             con.execute("INSERT OR REPLACE INTO settings VALUES ('upload_max_mb', ?)", (str(max(1, int(body["upload_max_mb"]))),))
         if "public_url" in body:
@@ -1076,6 +1131,7 @@ async def api_action(request: Request):
 
 
 _episode_series = {}                                   # Jellyfin episode id -> series id (for progress)
+_play_labels = {}                                      # item id -> "Show — S01E02 · Name" (for Who's playing)
 
 
 # ── in-app playback ──────────────────────────────────────────────────────────
@@ -1096,6 +1152,8 @@ def api_play_video(item_id: str, request: Request):
         info["resume"] = max(info["resume"], mine) if owner else mine
         if info.get("series_id"):
             _episode_series[item_id] = info["series_id"][5:]
+        if info.get("title"):
+            _play_labels[item_id] = info["title"]
         info.update(progress_sync=True, app_sync=owner)
         return info
     if not cfg.source("jellyfin"):
@@ -1109,6 +1167,8 @@ def api_play_video(item_id: str, request: Request):
         info["resume"], _ = playstate.get(STATE, identity.account_id.get(), "jellyfin", item_id)
     if info.get("series_id"):
         _episode_series[item_id] = info["series_id"]
+    if info.get("title"):
+        _play_labels[item_id] = info["title"]
     info["progress_sync"] = True                       # always saved in Omnarr
     info["app_sync"] = bool(uid)                       # …and in Jellyfin when you have an identity there
     return info
@@ -1136,7 +1196,7 @@ async def api_play_progress(request: Request):
         if b.get("source") == "plex":
             rk = str(b.get("item_id") or "").removeprefix("plex:")
             playstate.record(STATE, identity.account_id.get(), "plex", rk, pos, dur, bool(b.get("finished")),
-                             parent_id=_episode_series.get(f"plex:{rk}"))
+                             parent_id=_episode_series.get(f"plex:{rk}"), label=_play_labels.get(f"plex:{rk}"))
             ok = True
             if _owner_identity(_session(request)):
                 ok = await asyncio.to_thread(play.plex_progress, cfg, rk, pos, dur, bool(b.get("finished")))
@@ -1145,7 +1205,8 @@ async def api_play_progress(request: Request):
             raise HTTPException(400, "source must be jellyfin, abs or plex")
         # always kept in Omnarr (so a single Omnarr account is enough)…
         playstate.record(STATE, identity.account_id.get(), b["source"], b["item_id"], pos, dur,
-                         bool(b.get("finished")), parent_id=_episode_series.get(b["item_id"]))
+                         bool(b.get("finished")), parent_id=_episode_series.get(b["item_id"]),
+                         label=_play_labels.get(b["item_id"]))
         ok = True
         # …and written to the app too when this person has an identity there
         if b["source"] == "jellyfin":
@@ -1521,7 +1582,8 @@ def _upload_settings():
     try:
         return {"upload_dir": _setting(con, "upload_dir") or "", "upload_audio_dir": _setting(con, "upload_audio_dir") or "",
                 "upload_comics_dir": _setting(con, "upload_comics_dir") or "",
-                "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048), "public_url": _setting(con, "public_url") or ""}
+                "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048), "public_url": _setting(con, "public_url") or "",
+                "app_signup": (_setting(con, "app_signup") or "1") == "1"}
     finally:
         con.close()
 
@@ -1649,9 +1711,11 @@ async def api_upload(request: Request):
 
 
 @app.get("/api/activity")
-def api_activity():
+def api_activity(request: Request):
     out = live.activity(cfg)
     out["wanted_books"] = [w for w in wanted.list_all(STATE) if w["status"] != "done"]
+    if _owner_identity(_session(request)):              # who's playing what: admins only
+        out["watching"] = watching.activity(STATE, INDEX)
     return out
 
 
@@ -1747,22 +1811,26 @@ def api_devices():
 def api_devices_settings():
     con = state()
     try:
-        return devices.clean(devices.load(_setting(con, devices.KEY)))
+        return {**devices.clean(devices.load(_setting(con, devices.KEY))), "app_signup": (_setting(con, "app_signup") or "1") == "1"}
     finally:
         con.close()
 
 
 @app.post("/api/setup/devices")
 async def api_devices_save(request: Request):
+    body = await request.json()
+    signup = body.pop("app_signup", None) if isinstance(body, dict) else None
     try:
-        conf = devices.clean(await request.json())
+        conf = devices.clean(body)
     except ValueError as e:
         raise HTTPException(400, str(e))
     con = state()
     with con:
         con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (devices.KEY, json.dumps(conf)))
+        if signup is not None:
+            con.execute("INSERT OR REPLACE INTO settings VALUES ('app_signup', ?)", ("1" if signup else "0",))
     con.close()
-    return {"ok": True, "settings": conf}
+    return {"ok": True, "settings": {**conf, "app_signup": _upload_settings()["app_signup"]}}
 
 
 @app.get("/api/request/book/candidates")
