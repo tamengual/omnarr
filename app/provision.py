@@ -317,7 +317,8 @@ def calibre_web_delete(cfg, remote_id):
 
 
 # ── BookBridge ───────────────────────────────────────────────────────────────
-BB_CSRF = re.compile(r"""csrf[_-]?token["']?\s*(?:[:=]|content=)\s*["']([A-Za-z0-9_\-.]{16,})""", re.I)
+# BookBridge puts its per-session token in an injected script: var t = "<token>"; (csrf_token = "<token>" also accepted)
+BB_CSRF = re.compile(r"""(?:var t|csrf[_-]?token["']?)\s*(?:[:=]|content=)\s*["']([A-Za-z0-9_\-.]{16,})""", re.I)
 
 
 @contextmanager

@@ -78,7 +78,7 @@ class Apps:
                 con.execute("INSERT INTO users (username) VALUES (?)", (form["username"],))
                 con.commit()
                 con.close()
-            return httpx.Response(200, text='<script>window.csrf_token = "bbtoken1234567890abc";</script>')
+            return httpx.Response(200, text='<script>(function(){\n  var t = "bbtoken1234567890abc";\n  function addField(form){}})();</script>')
         return httpx.Response(404)
 
 

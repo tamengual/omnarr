@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3 — 2026-10-10
+
+- Making your own BookBridge login works: Omnarr now reads the form token BookBridge 7.8 puts on its admin pages.
+
 ## 1.0.2 — 2026-10-10
 
 - **Make your own app logins.** Under Use on your devices, people can create their own login in Jellyfin, Audiobookshelf, Komga, Calibre-Web, Storyteller, RomM and BookBridge with their Omnarr username and a password they pick (Omnarr doesn't keep it). The logins are linked to their Omnarr account straight away, so their progress lands in their own accounts. Calibre-Web also gives them a personal Kobo sync address, with step-by-step instructions for the Kobo, and BookBridge is set up with their own Audiobookshelf, Calibre-Web and Storyteller logins so their Kobo, audiobook and read-along places stay in step. Adult libraries stay hidden unless they're allowed. Switch it off in Settings → Help for your devices. Calibre-Web, Storyteller and BookBridge need an admin login in their connections; RomM needs a token with users.write. Deleting someone's account also removes the logins made for them.
