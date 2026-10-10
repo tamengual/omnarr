@@ -60,16 +60,17 @@ def test_book_search_lists_candidates_and_marks_owned(env, monkeypatch):
 
     def fake(cfg, query, kind):
         calls.append(kind)
-        if len(calls) % 2 == 0:                                # second lookup = comics
-            return [{"title": "Dune: House Atreides", "authors": ["Brian Herbert"], "year": "2020", "cover": "http://c/2"},
-                    {"title": "Dune", "authors": ["Frank Herbert"], "year": "1965", "cover": "http://c/dup"}]
-        return [{"title": "Dune", "authors": ["Frank Herbert"], "year": "1965", "cover": "http://c/1", "provider": "p", "book_id": "1"}]
+        return [{"title": "Dune", "authors": ["Frank Herbert"], "year": "1965", "cover": "http://c/1"},
+                {"title": "Summary of Dune", "authors": ["Quick Reads"]},
+                {"title": "Dune", "authors": ["Frank Herbert"], "year": "2005", "cover": "http://c/dup"},
+                {"title": "Dune: House Atreides", "authors": ["Brian Herbert"], "year": "2020", "cover": "http://c/2"}]
     monkeypatch.setattr(requests_, "book_candidates", fake)
     monkeypatch.setattr(main, "_library_index", lambda: ({}, {}))
     data = member.get("/api/request/book/search", params={"q": "dune"}).json()
-    assert data["enabled"] and data["manual_pick"]
-    assert [(r["kind"], r["title"]) for r in data["results"]] == [("book", "Dune"), ("comic", "Dune: House Atreides")]
-    assert data["results"][0]["status"] == "not_requested" and data["results"][0]["poster"] == "http://c/1"
+    assert data["enabled"] and data["manual_pick"] and calls == ["ebook"]     # comics are searched as ebooks
+    assert [r["title"] for r in data["results"]] == ["Dune", "Dune: House Atreides"]   # junk + duplicate dropped
+    first = data["results"][0]
+    assert first["status"] == "not_requested" and first["poster"] == "http://c/1" and first["any_format"] is True
     monkeypatch.setattr(main, "_match_library", lambda item, a, b: "w1" if item["title"] == "Dune" else None)
     owned = member.get("/api/request/book/search", params={"q": "dune"}).json()["results"][0]
     assert owned["status"] == "available" and owned["in_library"] == "w1"

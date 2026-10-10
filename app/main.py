@@ -1636,27 +1636,32 @@ def api_book_search(q: str):
     if not shelfmark:
         return {"results": [{"kind": "book", "title": q, "label": q, "authors": [], "year": "", "poster": "",
                              "status": "not_requested", "in_library": None}], "enabled": True, "manual_pick": False}
-    by_tmdb, by_title = _library_index()
+    try:
+        by_tmdb, by_title = _library_index()
+    except sqlite3.Error as e:                     # index not built yet: still search, just don't mark owned copies
+        log.debug("library index unavailable: %s", e)
+        by_tmdb, by_title = {}, {}
     out, seen = [], set()
-    for kind, fmt in (("book", "ebook"), ("comic", "comic")):
-        try:
-            cands = requests_.book_candidates(cfg, q, wanted.shelfmark_type(fmt))
-        except Exception as e:
-            log.debug("book search (%s) failed: %s", fmt, e)
+    try:                                           # Shelfmark searches comics as ebooks: one search covers both
+        cands = requests_.book_candidates(cfg, q, wanted.shelfmark_type("ebook"))
+    except Exception as e:
+        raise HTTPException(502, f"Shelfmark: {e}")
+    for c in cands:
+        title = (c.get("title") or "").strip()
+        authors = c.get("authors") or []
+        key = (normalize.key(title), normalize.surname(authors[0]) if authors else "")
+        if not title or key in seen or wanted.JUNK.search(title):
             continue
-        for c in cands[:8]:
-            title = (c.get("title") or "").strip()
-            authors = c.get("authors") or []
-            key = (normalize.key(title), normalize.surname(authors[0]) if authors else "")
-            if not title or key in seen:
-                continue
-            seen.add(key)
-            item = {"kind": kind, "title": title, "label": title, "authors": authors, "year": c.get("year") or "",
-                    "poster": c.get("cover") or "", "status": "not_requested", "in_library": None}
-            owned = _match_library(item, by_tmdb, by_title)
-            if owned:
-                item.update(status="available", in_library=owned)
-            out.append(item)
+        seen.add(key)
+        # "any_format": the person picks ebook, audiobook or comic, since search can't tell them apart
+        item = {"kind": "book", "title": title, "label": title, "authors": authors, "year": c.get("year") or "",
+                "poster": c.get("cover") or "", "status": "not_requested", "in_library": None, "any_format": True}
+        owned = _match_library(item, by_tmdb, by_title)
+        if owned:
+            item.update(status="available", in_library=owned)
+        out.append(item)
+        if len(out) == 10:
+            break
     return {"results": out, "enabled": True, "manual_pick": True}
 
 
@@ -1715,10 +1720,9 @@ def api_book_candidates(format: str, request: Request, work: str = "", title: st
     # Metadata search ranks by popularity; put the book that IS this one first
     # (same author surname + title match), and drop study guides / summaries.
     author = (w["authors"] or [""])[0]
-    junk = ("summary", "study guide", "sparknotes", "cliffsnotes", "analysis of")
     def score(c):
         s = normalize.same_book(w["title"], author, c["title"] or "", (c["authors"] or [""])[0])
-        return s - (1 if any(j in (c["title"] or "").lower() for j in junk) else 0)
+        return s - (1 if wanted.JUNK.search(c["title"] or "") else 0)
     cands.sort(key=score, reverse=True)
     return {"query": query, "candidates": cands[:8]}
 

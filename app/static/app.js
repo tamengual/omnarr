@@ -2111,7 +2111,7 @@ function bindRelatedBookRequest(card, button, item) {
     panel.hidden = !panel.hidden;
     button.setAttribute("aria-expanded", String(!panel.hidden));
     if (panel.hidden) return;
-    panel.innerHTML = `<p class="hint">Which format? ${canRequest() ? "Omnarr keeps looking until it finds a good copy." : "An admin will review your request."}</p><div class="request-card-actions"><button class="secondary-button" type="button" data-format="ebook">Ebook</button><button class="secondary-button" type="button" data-format="audiobook">Audiobook</button></div>`;
+    panel.innerHTML = `<p class="hint">Which format? ${canRequest() ? "Omnarr keeps looking until it finds a good copy." : "An admin will review your request."}</p><div class="request-card-actions"><button class="secondary-button" type="button" data-format="ebook">Ebook</button><button class="secondary-button" type="button" data-format="audiobook">Audiobook</button>${item.any_format ? '<button class="secondary-button" type="button" data-format="comic">Comic</button>' : ""}</div>`;
     $$("[data-format]", panel).forEach((b) => b.addEventListener("click", () => request(b.dataset.format)));
     $("[data-format]", panel).focus();
   });
