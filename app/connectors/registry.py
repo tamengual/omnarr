@@ -168,6 +168,11 @@ def _test_notify(s):
     return notify.test(s)
 
 
+def _test_tailscale(s):
+    from .. import tailnet
+    return tailnet.test(s)
+
+
 def _test_email(s):
     from .. import mailer
     return mailer.test(s)
@@ -283,6 +288,16 @@ APPS = [
                 {"key": "format", "label": "Format (json, ntfy or discord)", "type": "text", "required": False, "placeholder": "json"},
                 {"key": "events", "label": "Only these events (leave empty for all)", "type": "list", "required": False,
                  "help": "request_ready, approval_needed, request_decided, account_joined, upload"}]},
+    {"key": "tailscale", "label": "Tailscale (private access)", "category": "Other", "test": _test_tailscale,
+     "about": "Let people ask for private-network access from \"Use on your devices\". When you approve, Omnarr creates a "
+              "single-use Tailscale invite that shares just this one machine with their own Tailscale account.",
+     "fields": [{"key": "api_key", "label": "API access token", "type": "secret", "required": True,
+                 "help": "Tailscale admin console → Settings → Keys → Generate access token (tskey-api-…). Tokens last up to "
+                         "90 days; Test shows when this one runs out. Tailscale doesn't allow invites with OAuth-client tokens."},
+                {"key": "device", "label": "Machine to share", "type": "text", "required": True, "placeholder": "e.g. my-server",
+                 "help": "Its name as listed under Machines in the Tailscale admin console."},
+                {"key": "tailnet", "label": "Tailnet (optional)", "type": "text", "required": False, "placeholder": "-",
+                 "help": "Leave empty for the token's own tailnet."}]},
 ]
 BY_KEY = {a["key"]: a for a in APPS}
 

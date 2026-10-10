@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 — 2026-10-10
+
+- **Ask for private access.** Connect Tailscale (Settings → Connections) and people can ask for private-network access from Use on your devices. You approve it in Activity → Requests; Omnarr then creates a single-use invite that shares just this machine with their own Tailscale account, and shows it to them with setup steps. Removing someone cancels an unused invite, and tells you who to remove in Tailscale if they had already accepted.
+- **Comics go to your comics library.** Set a comics folder under Uploads and sharing, and uploaded comic archives go there, as do comic EPUBs (the fixed-layout, picture-per-page kind stores sell), repacked as CBZ with the same pages. Komga rescans right away.
+
 ## 1.0.0 — 2026-10-10
 
 Omnarr 1.0. Everything from the 0.x releases, plus:

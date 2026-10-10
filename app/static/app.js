@@ -1152,6 +1152,7 @@ function fillUploadOptions(options) {
   const form = $("#upload-options-form");
   form.elements.upload_dir.value = options.upload_dir || "";
   form.elements.upload_audio_dir.value = options.upload_audio_dir || "";
+  form.elements.upload_comics_dir.value = options.upload_comics_dir || "";
   form.elements.upload_max_mb.value = options.upload_max_mb ?? 2048;
   form.elements.public_url.value = options.public_url || "";
 }
@@ -1161,7 +1162,7 @@ $("#upload-options-form").addEventListener("submit", async (event) => {
   if (!isAdmin() || settingsBusy || !settingsController || !uploadOptionsReady) return;
   const form = event.currentTarget;
   const controller = settingsController;
-  const values = { upload_dir: form.elements.upload_dir.value.trim(), upload_audio_dir: form.elements.upload_audio_dir.value.trim(), upload_max_mb: Number(form.elements.upload_max_mb.value), public_url: form.elements.public_url.value.trim() };
+  const values = { upload_dir: form.elements.upload_dir.value.trim(), upload_audio_dir: form.elements.upload_audio_dir.value.trim(), upload_comics_dir: form.elements.upload_comics_dir.value.trim(), upload_max_mb: Number(form.elements.upload_max_mb.value), public_url: form.elements.public_url.value.trim() };
   settingsPending(true);
   connectionMessage($("#upload-options-message"), "Saving upload folders…", "busy");
   try {
@@ -1344,7 +1345,7 @@ function saveAccount(form, account, payload) {
     }
     await loadAccounts();
     if (settingsController?.signal === signal) {
-      connectionMessage($("#users-message"), payload === null ? "User deleted." : "User saved.", "success");
+      connectionMessage($("#users-message"), payload === null ? `User deleted.${result.message ? ` ${result.message}` : ""}` : "User saved.", "success");
       $("#users-refresh").focus();
     }
   });
@@ -1466,10 +1467,13 @@ async function showDevices() {
   const controller = devicesController = new AbortController();
   $("#devices-status").textContent = "Loading…";
   try {
-    const data = await api("api/devices", { signal: controller.signal });
+    const [data, access] = await Promise.all([
+      api("api/devices", { signal: controller.signal }),
+      api("api/private-access", { signal: controller.signal }).catch((error) => { if (error.name === "AbortError") throw error; return { enabled: false }; }),
+    ]);
     if (controller !== devicesController) return;
     $("#devices-status").textContent = "";
-    renderDevices(data);
+    renderDevices(data, access);
   } catch (error) {
     if (controller.signal.aborted || error.message === "login") return;
     $("#devices-status").textContent = error.message;
@@ -1484,13 +1488,33 @@ function deviceSection(id, title, body) {
   return `<section class="device-section" aria-labelledby="device-${id}"><h2 id="device-${id}">${title}</h2>${body}</section>`;
 }
 
-function renderDevices(data) {
+function privateAccessBody(access, who) {
+  if (access.problem) return `<div class="device-note"><strong>Tailscale problem.</strong> ${esc(access.problem)}</div>${privateAccessBody({ ...access, problem: "" }, who)}`;
+  if (access.state === "connected") {
+    return `<p><strong>You're connected${access.as ? ` as ${esc(access.as)}` : ""}.</strong> Keep the Tailscale app switched on whenever you use something marked “Only on the private network”.</p>`;
+  }
+  if (access.state === "invited") {
+    const link = safeUrl(access.url || "");
+    return `<p>${who} approved your request. Three steps:</p><ul>
+      <li><strong>Install Tailscale</strong> (free) on the device you'll use: phone, computer, or a streaming box.</li>
+      <li><strong>Open your invite</strong> and sign in to Tailscale (or make a free account):<br>${link ? `<a class="primary-button device-invite" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open my invite</a>` : "The invite link is missing; ask " + who + " to send it again."}</li>
+      <li><strong>Switch Tailscale on.</strong></li></ul>
+      <p class="hint">The invite works once and shares only ${who}'s media server with you, nothing else on their network. Add more of your devices by signing in to Tailscale on them with the same account.</p>`;
+  }
+  if (access.state === "pending") return `<p>Your request is with ${who}. Your invite shows up here as soon as it's approved.</p>`;
+  const declined = access.state === "denied" ? `<p class="hint">${who} declined your last request${access.note ? `: “${esc(access.note)}”` : "."} You can ask again.</p>` : "";
+  return `<p>Some apps (marked “Only on the private network”) work only on ${who}'s private network, run with Tailscale. Ask for access, and once ${who} approves, your invite appears here.</p>${declined}<button class="secondary-button" type="button" data-access-ask>Ask ${who} for access</button><p class="hint" data-access-message role="status" aria-live="polite"></p>`;
+}
+
+function renderDevices(data, access = {}) {
   const who = data.contact ? esc(data.contact) : "the person who invited you";
   const apps = data.apps || {};
   const canSave = isAdmin() || permissions.can_download === true;
   const library = data.public_url || (viaHomeAssistant ? "" : `${location.origin}${location.pathname}`);
   const login = (app) => `<p class="hint">This needs its own ${app} login. ${data.login_note ? esc(data.login_note) : `Ask ${who} for one; your Omnarr password doesn't work there.`}</p>`;
-  const privateNote = (app) => app?.private ? `<div class="device-note"><strong>Only on the private network.</strong> ${data.network_note ? esc(data.network_note) : `Ask ${who} to add you.`} The device you use has to be connected to it.</div>` : "";
+  const howToJoin = access.enabled ? (access.state === "connected" ? "You're on it." : "Get access under Private network access above.")
+    : (data.network_note ? esc(data.network_note) : `Ask ${who} to add you.`);
+  const privateNote = (app) => app?.private ? `<div class="device-note"><strong>Only on the private network.</strong> ${howToJoin} The device you use has to be connected to it.</div>` : "";
   const sections = [];
 
   const where = library ? deviceAddress(library) : `<p>Open Omnarr the way you normally do. For its own address to use on a phone, ask ${who}.</p>`;
@@ -1499,6 +1523,8 @@ function renderDevices(data) {
     <li><strong>Android:</strong> in Chrome tap <em>⋮</em> → <em>Add to Home screen</em> (or <em>Install app</em>). In Samsung Internet tap <em>☰</em> → <em>Add page to</em> → <em>Home screen</em>.</li>
     <li><strong>Computer:</strong> in Chrome or Edge, use the install icon at the right end of the address bar.</li></ul>
     <p class="hint">It then opens full-screen like any other app, and audiobooks keep playing with the screen locked.</p>`));
+
+  if (access.enabled) sections.push(deviceSection("access", "Private network access", privateAccessBody(access, who)));
 
   let read;
   if (canSave) {
@@ -1525,6 +1551,19 @@ function renderDevices(data) {
 
   sections.push(deviceSection("help", "Need help?", `<p>Take a screenshot of what you see and send it to ${who}.</p>`));
   $("#devices-body").innerHTML = (isAdmin() ? '<p class="device-note">This is what everyone you invite sees. Change it in Settings → Help for your devices.</p>' : "") + sections.join("");
+  $("[data-access-ask]", $("#devices-body"))?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const message = $("[data-access-message]", $("#devices-body"));
+    button.disabled = true;
+    message.textContent = "Sending your request…";
+    try {
+      await api("api/private-access", { method: "POST" });
+      showDevices();
+    } catch (error) {
+      button.disabled = false;
+      message.textContent = error.message === "login" ? "Sign in again to ask." : error.message;
+    }
+  });
   $$("[data-copy]", $("#devices-body")).forEach((button) => button.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "Copied"; }
     catch { const range = document.createRange(); range.selectNodeContents(button.previousElementSibling); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); button.textContent = "Selected"; }

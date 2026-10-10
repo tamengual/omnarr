@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import sqlite3
 import threading
 import time
@@ -28,7 +29,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import devices, extend                           # noqa: E402
+from . import devices, extend, tailnet                  # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -386,7 +387,8 @@ def api_accounts_delete(account_id: int, request: Request):
     finally:
         con.close()
     live._audit(STATE, "account.delete", {"username": row["username"], "by": me["username"]}, "ok")
-    return {"ok": True}
+    message = _revoke_private_access(account_id, row["username"])
+    return {"ok": True, **({"message": message} if message else {})}
 
 
 # ── invitations: an admin makes a sign-up link (copy it, or have Omnarr email it) ──
@@ -705,7 +707,7 @@ async def setup_options(request: Request):
     pub = (body.get("public_url") or "").strip()
     if pub and not pub.startswith(("https://", "http://")):
         raise HTTPException(400, "The public address must start with https:// (or http://)")
-    for key in ("upload_dir", "upload_audio_dir"):      # validate before saving anything
+    for key in ("upload_dir", "upload_audio_dir", "upload_comics_dir"):      # validate before saving anything
         path = (body.get(key) or "").strip()
         if path and not (os.path.isdir(path) and os.access(path, os.W_OK)):
             raise HTTPException(400, f"{path} isn't a writable folder inside Omnarr's container (mount it read-write)")
@@ -713,7 +715,7 @@ async def setup_options(request: Request):
     with con:
         if "adult_enabled" in body:
             con.execute("INSERT OR REPLACE INTO settings VALUES ('adult_enabled', ?)", ("1" if body["adult_enabled"] else "0",))
-        for key in ("upload_dir", "upload_audio_dir"):
+        for key in ("upload_dir", "upload_audio_dir", "upload_comics_dir"):
             if key in body:
                 con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, (body[key] or "").strip()))
         if "upload_max_mb" in body:
@@ -1518,6 +1520,7 @@ def _upload_settings():
     con = state()
     try:
         return {"upload_dir": _setting(con, "upload_dir") or "", "upload_audio_dir": _setting(con, "upload_audio_dir") or "",
+                "upload_comics_dir": _setting(con, "upload_comics_dir") or "",
                 "upload_max_mb": int(_setting(con, "upload_max_mb") or 2048), "public_url": _setting(con, "public_url") or ""}
     finally:
         con.close()
@@ -1526,8 +1529,49 @@ def _upload_settings():
 @app.get("/api/upload")
 def api_upload_info():
     s = _upload_settings()
-    return {"books_enabled": bool(s["upload_dir"]), "audio_enabled": bool(s["upload_audio_dir"]),
+    return {"books_enabled": bool(s["upload_dir"] or s["upload_comics_dir"]), "audio_enabled": bool(s["upload_audio_dir"]),
+            "comics_enabled": bool(s["upload_comics_dir"]),
             "max_mb": s["upload_max_mb"], "types": {k: sorted(v) for k, v in UPLOAD_TYPES.items()}}
+
+
+COMIC_EXTS = {"cbz", "cbr", "cb7"}
+
+
+def _file_comic(tmp, name, ext, comics_dir):
+    """Put an uploaded comic into the comics folder (a folder per comic, as Komga likes): comic
+    archives as they are, comic EPUBs repacked as CBZ. Returns the new path, or None when the
+    file isn't a comic (it then goes to the books drop-off as usual)."""
+    from . import comicpack, files
+    if ext == "epub":
+        info = comicpack.inspect(tmp)
+        if not info["comic"]:
+            return None
+        stem = files.safe_name(info["title"] or name.rsplit(".", 1)[0])
+        folder = os.path.join(comics_dir, stem)
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, f"{stem}.cbz")
+        n = 2
+        while os.path.exists(out):
+            out = os.path.join(folder, f"{stem} ({n}).cbz")
+            n += 1
+        try:
+            comicpack.to_cbz(tmp, out + ".part")
+            os.replace(out + ".part", out)
+        finally:
+            if os.path.exists(out + ".part"):
+                os.remove(out + ".part")
+        os.remove(tmp)
+        return out
+    stem = name.rsplit(".", 1)[0]
+    folder = os.path.join(comics_dir, stem)
+    os.makedirs(folder, exist_ok=True)
+    out = os.path.join(folder, name)
+    n = 2
+    while os.path.exists(out):
+        out = os.path.join(folder, f"{stem} ({n}).{ext}")
+        n += 1
+    shutil.move(tmp, out)
+    return out
 
 
 @app.post("/api/upload")
@@ -1539,11 +1583,15 @@ async def api_upload(request: Request):
     me = _account(request)["username"]
     form = await request.form()
     results = []
+    comics_dir = s["upload_comics_dir"] if s["upload_comics_dir"] and os.path.isdir(s["upload_comics_dir"]) else ""
+    comics_added = False
     for item in form.getlist("files"):
         name = files.safe_name(getattr(item, "filename", "") or "upload")
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         kind = next((k for k, exts in UPLOAD_TYPES.items() if ext in exts), None)
         dest = {"book": s["upload_dir"], "audio": s["upload_audio_dir"]}.get(kind or "")
+        if kind == "book" and comics_dir and (ext in COMIC_EXTS or ext == "epub" and not dest):
+            dest = dest or comics_dir                  # the .part file waits next to its final home
         if not kind:
             results.append({"file": name, "ok": False, "message": f".{ext or '?'} files aren't accepted"})
             continue
@@ -1568,15 +1616,33 @@ async def api_upload(request: Request):
                     if size > limit:
                         raise ValueError(f"larger than {s['upload_max_mb']} MB")
                     out.write(chunk)
-            os.replace(tmp, final)
+            comic = await asyncio.to_thread(_file_comic, tmp, name, ext, comics_dir) \
+                if kind == "book" and comics_dir and (ext in COMIC_EXTS or ext == "epub") else None
+            if comic:
+                final = comic
+            elif ext in COMIC_EXTS and comics_dir:
+                raise ValueError("couldn't file it with the comics")
+            elif not s["upload_dir"]:
+                os.remove(tmp)                         # comics-only setup: a non-comic EPUB has nowhere to go
+                results.append({"file": name, "ok": False, "message": "Book uploads aren't set up (ask an admin); only comics are"})
+                continue
+            else:
+                os.replace(tmp, final)
         except Exception as ex:
             if os.path.exists(tmp):
                 os.remove(tmp)
             results.append({"file": name, "ok": False, "message": f"Upload failed: {ex}"})
             continue
-        live._audit(STATE, "upload", {"by": me, "file": os.path.basename(final), "bytes": size, "kind": kind}, "ok")
+        if comic:
+            comics_added = True
+        live._audit(STATE, "upload", {"by": me, "file": os.path.basename(final), "bytes": size,
+                                      "kind": "comic" if comic else kind}, "ok")
         notify.send(cfg, STATE, "upload", "New upload", f"{me} uploaded {os.path.basename(final)}.")
-        results.append({"file": os.path.basename(final), "ok": True, "message": "Uploaded; it appears after the next library scan"})
+        results.append({"file": os.path.basename(final), "ok": True,
+                        "message": "Added to your comics; it appears in a minute" if comic
+                        else "Uploaded; it appears after the next library scan"})
+    if comics_added and komga.api_mode(cfg.source("komga")):
+        threading.Thread(target=komga.scan_all, args=(cfg, STATE), daemon=True).start()
     if not results:
         raise HTTPException(400, "No files received (field name: files)")
     return {"ok": all(r["ok"] for r in results), "results": results}
@@ -1800,7 +1866,125 @@ def _do_wanted(p, account_id=None):
 QUEUE_SCHEMA = """CREATE TABLE IF NOT EXISTS request_queue (
   id INTEGER PRIMARY KEY, account_id INTEGER, kind TEXT, title TEXT, payload TEXT, created REAL,
   status TEXT, decided_by TEXT, decided_at REAL, note TEXT)"""
-_DO = {"screen": _do_screen, "game": _do_game, "book_download": _do_book_download, "wanted": _do_wanted}
+
+
+# ── private access: people ask, an admin approves, Omnarr creates a Tailscale share invite ──
+ACCESS_SCHEMA = """CREATE TABLE IF NOT EXISTS private_access (
+  account_id INTEGER PRIMARY KEY, invite_id TEXT, invite_url TEXT, created REAL, accepted_by TEXT)"""
+
+
+def _do_private_access(payload, account_id):
+    s = cfg.source("tailscale")
+    if not tailnet.enabled(s):
+        raise HTTPException(400, "Tailscale isn't connected (Settings → Connections)")
+    con = state()
+    try:
+        row = accounts.get(con, account_id)
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(404, "That account no longer exists")
+    con = state()
+    con.execute(ACCESS_SCHEMA)
+    have = con.execute("SELECT accepted_by FROM private_access WHERE account_id=?", (account_id,)).fetchone()
+    con.close()
+    if have and have["accepted_by"]:
+        raise HTTPException(400, f"{row['username']} already has private access")
+    try:
+        inv = tailnet.create_invite(s, (row["email"] or "").strip() or None)
+    except Exception as e:
+        raise HTTPException(502, f"Tailscale: {e}")
+    con = state()
+    con.execute(ACCESS_SCHEMA)
+    with con:
+        con.execute("INSERT OR REPLACE INTO private_access VALUES (?,?,?,?,NULL)", (account_id, inv["id"], inv["url"], time.time()))
+    con.close()
+    live._audit(STATE, "private_access.invite", {"username": row["username"]}, "ok")
+
+
+def _revoke_private_access(account_id, username):
+    """When someone's account goes: cancel an unused invite. A share they already accepted can't be
+    removed through Tailscale's API, so say who to remove by hand."""
+    con = state()
+    con.execute(ACCESS_SCHEMA)
+    row = con.execute("SELECT * FROM private_access WHERE account_id=?", (account_id,)).fetchone()
+    with con:
+        con.execute("DELETE FROM private_access WHERE account_id=?", (account_id,))
+    con.close()
+    s = cfg.source("tailscale")
+    if not row or not row["invite_id"] or not tailnet.enabled(s):
+        return ""
+    try:
+        st = tailnet.invite_status(s, row["invite_id"])
+        if st and st["accepted"]:
+            who = st["by"] or row["accepted_by"] or username
+            return (f"{username} had accepted a Tailscale share as {who}. Remove it in Tailscale: Machines → "
+                    f"{s['device']} → Share → remove {who}.")
+        tailnet.delete_invite(s, row["invite_id"])
+    except Exception as e:
+        log.warning("couldn't cancel %s's Tailscale invite: %s", username, e)
+        return f"Couldn't cancel {username}'s Tailscale invite ({e}). Check Tailscale → Machines → {s['device']} → Share."
+    return ""
+
+
+@app.get("/api/private-access")
+def api_private_access(request: Request):
+    """This person's private-network access: none, pending, denied, invited (with the link) or connected."""
+    s = cfg.source("tailscale")
+    if not tailnet.enabled(s):
+        return {"enabled": False}
+    acct = _account(request)
+    con = state()
+    con.execute(ACCESS_SCHEMA)
+    con.execute(QUEUE_SCHEMA)
+    try:
+        row = con.execute("SELECT * FROM private_access WHERE account_id=?", (acct["id"],)).fetchone()
+        ask = con.execute("SELECT status, note FROM request_queue WHERE account_id=? AND kind='private_access' "
+                          "ORDER BY created DESC LIMIT 1", (acct["id"],)).fetchone()
+    finally:
+        con.close()
+    if row and row["accepted_by"]:
+        return {"enabled": True, "state": "connected", "as": row["accepted_by"]}
+    if row and row["invite_id"]:
+        try:
+            st = tailnet.invite_status(s, row["invite_id"])
+        except Exception as e:                            # Tailscale unreachable or the token expired: still show the link
+            log.warning("Tailscale invite check failed: %s", e)
+            st = {"accepted": False, "by": ""}
+            if acct["role"] == "admin":
+                return {"enabled": True, "state": "invited", "url": row["invite_url"],
+                        "problem": "Tailscale didn't answer. Check the token in Connections → Tailscale (it may have expired)."}
+        if st and st["accepted"]:
+            con = state()
+            with con:
+                con.execute("UPDATE private_access SET accepted_by=? WHERE account_id=?", (st["by"] or "yes", acct["id"]))
+            con.close()
+            return {"enabled": True, "state": "connected", "as": st["by"]}
+        if st:
+            return {"enabled": True, "state": "invited", "url": row["invite_url"]}
+    if ask and ask["status"] == "pending":
+        return {"enabled": True, "state": "pending"}
+    if ask and ask["status"] == "denied" and not row:
+        return {"enabled": True, "state": "denied", "note": ask["note"] or ""}
+    return {"enabled": True, "state": "none"}
+
+
+@app.post("/api/private-access")
+def api_private_access_ask(request: Request):
+    if not tailnet.enabled(cfg.source("tailscale")):
+        raise HTTPException(400, "Private access isn't set up on this server")
+    acct = _account(request)
+    current = api_private_access(request)
+    if current["state"] in ("pending", "invited", "connected"):
+        return {"ok": True, **current}
+    if acct["role"] == "admin":                          # an admin doesn't need to ask anyone
+        _do_private_access({}, acct["id"])
+        return {"ok": True, **api_private_access(request)}
+    return _queue(request, "private_access", f"Private network access for {acct['username']}", {})
+
+
+_DO = {"screen": _do_screen, "game": _do_game, "book_download": _do_book_download, "wanted": _do_wanted,
+       "private_access": _do_private_access}
 
 
 def _needs_approval(request):

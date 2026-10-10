@@ -195,14 +195,24 @@ or Audiobookshelf accounts. If someone already has their own there, they can lin
 
 ```yaml
     volumes:
-      - /path/to/cwa-book-ingest:/uploads/books          # ebooks and comics
+      - /path/to/cwa-book-ingest:/uploads/books          # ebooks (and comics, unless you set a comics folder)
       - /path/to/audiobookshelf/library:/uploads/audiobooks
+      - /path/to/komga/comics:/uploads/comics            # optional: comics go straight to Komga
 ```
+
+With a comics folder set, comic archives (CBZ/CBR) go there, and so do comic EPUBs, the
+fixed-layout, picture-per-page kind that stores sell. Those are repacked as CBZ with the same
+page images, and Komga is asked to rescan.
 
 **Sharing outside your home network:** Omnarr has no built-in remote access. Put it behind
 something that does:
 
-- **Tailscale sharing** keeps it private; each person installs Tailscale.
+- **Tailscale sharing** keeps it private; each person installs Tailscale. Connect *Tailscale
+  (private access)* in Connections with an API access token, and people can ask for access
+  from **Use on your devices**. When you approve the request (Activity → Requests), Omnarr
+  creates a single-use Tailscale invite that shares just this one machine with them.
+  Tailscale only allows that with a personal API token, which lasts at most 90 days, so
+  Test shows when yours runs out.
 - **A public HTTPS address** needs no app for them, e.g. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
   (`tailscale funnel --bg --https=443 http://127.0.0.1:8765`) or a reverse proxy.
   - Set **Settings → Uploads and sharing → Public address**, so invitation links use it.
