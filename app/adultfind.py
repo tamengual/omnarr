@@ -56,6 +56,21 @@ def studio_forms(name):
     return list(dict.fromkeys(f for f in forms if f))
 
 
+def split_studio(q, studio):
+    """(True, other words) when the words typed spell the studio, spaces or not
+    ("fraternity x" / "FraternityX", "sean cody" / "SeanCody"); else (False, all words)."""
+    words, target = norm(q).split(), compact(studio)
+    for i in range(len(words)):
+        joined = ""
+        for j in range(i, len(words)):
+            joined += words[j]
+            if joined == target:
+                return True, words[:i] + words[j + 1:]
+            if len(joined) >= len(target):
+                break
+    return False, words
+
+
 def first_names(performers):
     return [p.split()[0] for p in performers if p and p.split()]
 
@@ -109,14 +124,20 @@ def phrasings(q, scene=None, known_studios=()):
         forms = studio_forms(scene.get("studio"))
         names = first_names(scene.get("performers") or [])
         title = " ".join(w for w in norm(re.sub(r":.*$", "", scene.get("title") or "")).split() if w not in STOP)
+        nick = next((a for a in scene.get("studio_aliases") or [] if " " not in a and "." not in a
+                     and len(compact(a)) >= 4 and compact(a) != compact(scene.get("studio"))), "")
         if forms and names:
             out.append(f"{forms[0]} {' '.join(names[:3])}")
+            if nick:
+                out.append(f"{nick} {' '.join(names[:3])}")          # FratX scenes are posted as FraternityX
         if scene.get("code") and forms:
             out.append(f"{forms[0]} {scene['code']}")
         if len(names) >= 2:
             out.append(" ".join(names[:3]))
         if forms and title:
             out.append(f"{forms[0]} {title}")
+            if nick and not names:
+                out.append(f"{nick} {title}")
         if forms and re.match(r"\d{4}-\d{2}-\d{2}", scene.get("date") or ""):
             y, m, d = scene["date"].split("-")
             out.append(f"{forms[0]} {y[2:]}.{m}.{d}")
@@ -125,16 +146,17 @@ def phrasings(q, scene=None, known_studios=()):
     # the words as typed, with a studio name glued together the way uploaders write it
     typed = " ".join(q.split())
     if typed:
-        glued = typed
-        for studio in sorted(known_studios, key=len, reverse=True):
-            if " " in studio and norm(studio) in norm(typed):
-                glued = re.sub(re.escape(studio), studio_forms(studio)[0], typed, flags=re.I)
-                rest = norm(re.sub(re.escape(studio), " ", typed, flags=re.I))
-                if glued != typed:
-                    out.append(glued)
-                if rest and len(rest.split()) >= 2:
-                    out.append(rest)
-                break
+        named = named_studios(typed, known_studios)
+        if named:
+            studio, aliases, rest = named[0]
+            glued = " ".join([studio_forms(studio)[0]] + rest)
+            if norm(glued) != norm(typed):
+                out.append(glued)
+            for nick in [a for a in aliases if " " not in a and "." not in a and len(compact(a)) >= 4
+                         and compact(a) != compact(studio)][:2]:
+                out.append(" ".join([nick] + rest))      # FratX is also posted as FraternityX
+            if len(rest) >= 2:
+                out.append(" ".join(rest))
         out.append(typed)
     return list(dict.fromkeys(x.strip() for x in out if x.strip()))[:MAX_QUERIES]
 
@@ -165,8 +187,26 @@ def _search(cfg, query, ids):
 
 
 # ── 4. rank by what you meant ────────────────────────────────────────────────
-def _has_studio(t, tc, name):
-    return bool(name) and (any(compact(f) and compact(f) in tc for f in studio_forms(name)[:2]) or norm(name) in t)
+def _has_studio(t, tc, name, aliases=()):
+    if not name:
+        return False
+    if any(compact(f) and compact(f) in tc for f in studio_forms(name)[:2]) or norm(name) in t:
+        return True
+    return any(len(compact(a)) >= 4 and compact(a) in tc for a in aliases)   # short nicknames match too much
+
+
+def named_studios(q, studios):
+    """[(name, aliases, other words)] for studios the words spell, by name or nickname, spaces or not.
+    studios: {name: [aliases]} (a plain list/set of names works too)."""
+    studios = studios if isinstance(studios, dict) else {s: [] for s in studios}
+    out = []
+    for name in sorted(studios, key=len, reverse=True):
+        for spelling in [name, *studios[name]]:
+            found, rest = split_studio(q, spelling)
+            if found:
+                out.append((name, studios[name], rest))
+                break
+    return out
 
 
 def score(title, q, scene=None, studios=()):
@@ -175,7 +215,7 @@ def score(title, q, scene=None, studios=()):
     t, tc = norm(title), compact(title)
     pts, why, on_target = 0, [], False
     if scene:
-        if _has_studio(t, tc, scene.get("studio")):
+        if _has_studio(t, tc, scene.get("studio"), scene.get("studio_aliases") or ()):
             pts += 4
             on_target = True
             why.append(scene["studio"])
@@ -183,8 +223,9 @@ def score(title, q, scene=None, studios=()):
         digits = re.sub(r"\D", "", code)
         if code and (compact(code) in tc or (len(digits) >= 3 and re.search(rf"(?<!\d){digits}(?!\d)", t))):
             pts += 5
-            on_target = True
             why.append(f"scene {scene['code']}")
+            # a long or lettered code is distinctive on its own; "485" only counts with the studio
+            on_target = on_target or len(digits) >= 5 or (re.search(r"[a-z]", compact(code)) and len(compact(code)) >= 4)
         if not scene.get("studio"):
             on_target = True
         for p in scene.get("performers") or []:
@@ -206,14 +247,13 @@ def score(title, q, scene=None, studios=()):
             elif re.search(rf"\b{y}\b", t):
                 pts += 1
     else:
-        named = [s for s in studios if s and norm(s) and norm(s) in norm(q)]
-        rest = norm(q)
-        for s in named:                          # the words of a studio's name don't count on their own
-            rest = rest.replace(norm(s), " ")
-            if _has_studio(t, tc, s):
+        named = named_studios(q, studios)
+        rest = " ".join(named[0][2]) if named else norm(q)     # the studio's own words don't count again
+        for name, aliases, _ in named:
+            if _has_studio(t, tc, name, aliases):
                 pts += 6
                 on_target = True
-                why.append(s)
+                why.append(name)
         words = [w for w in _words(rest) if len(w) > 1]
         hits = [w for w in words if re.search(rf"\b{re.escape(w)}\b", t) or (len(w) > 3 and w in tc)]
         pts += 2 * len(hits)
@@ -225,15 +265,40 @@ def score(title, q, scene=None, studios=()):
     return pts, why, on_target
 
 
+def studio_hints(cfg, q):
+    """{studio: [aliases]} for studios the words name, by name or nickname ("fratx" -> FraternityX)."""
+    c = _stashdb(cfg)
+    if not c:
+        return {s["studio"]: [] for s in understand(cfg, q, limit=5) if s["studio"]}
+    words = norm(q).split()
+    pairs = [words[i:i + 2] for i in range(min(len(words) - 1, 3))]
+    terms = list(dict.fromkeys([q.strip()] + [w for w in words if len(w) >= 3][:3]
+                               + ["".join(p) for p in pairs]))            # "fraternity x" -> fraternityx
+    found = {}
+    with c:
+        for term in terms:
+            try:
+                for s in _gql(c, "query($t:String!){ searchStudio(term:$t, limit:5){ name aliases } }", {"t": term}).get("searchStudio") or []:
+                    found.setdefault(s["name"], s.get("aliases") or [])
+            except Exception as e:
+                log.info("stashdb studio search %r failed: %s", term, e)
+    return {n: a for n, a in found.items() if named_studios(q, {n: a})}
+
+
 def find(cfg, q, scene=None):
     """{"queries": [...], "indexers": [...], "results": [...], "errors": [...]}."""
     ids = adult_indexers(cfg)
     if not ids:
         return {"queries": [], "indexers": [], "results": [], "errors": ["No adult indexers in Prowlarr (tag them xxx)"]}
-    studios = {scene["studio"]} if scene and scene.get("studio") else set()
+    if scene and scene.get("studio") and "studio_aliases" not in scene:
+        try:                                     # its nicknames too: FratX is mostly posted as FraternityX
+            scene = {**scene, "studio_aliases": studio_hints(cfg, scene["studio"]).get(scene["studio"], [])}
+        except Exception as e:
+            log.info("stashdb studio lookup failed: %s", e)
+    studios = {scene["studio"]: scene.get("studio_aliases") or []} if scene and scene.get("studio") else {}
     if not scene:
         try:
-            studios |= {s["studio"] for s in understand(cfg, q, limit=5) if s["studio"]}
+            studios.update(studio_hints(cfg, q))
         except Exception as e:
             log.info("stashdb lookup failed: %s", e)
     queries = phrasings(q, scene, studios)
@@ -426,7 +491,7 @@ def wanted_list(state_path, limit=60):
 
 
 SCENES_BY = """query($id:ID!){ queryScenes(input:{%s:{value:[$id], modifier:INCLUDES}, sort:DATE, direction:DESC, per_page:25}) {
-  scenes { id title code date studio { name } performers { performer { name } } } } }"""
+  scenes { id title code date studio { name aliases } performers { performer { name } } } } }"""
 
 
 def _new_scenes(c, kind, fid, since):
@@ -436,7 +501,7 @@ def _new_scenes(c, kind, fid, since):
         if (s.get("date") or "") < since:
             continue
         out.append({"id": s["id"], "title": s.get("title") or "", "code": s.get("code") or "", "date": s.get("date") or "",
-                    "studio": (s.get("studio") or {}).get("name") or "",
+                    "studio": (s.get("studio") or {}).get("name") or "", "studio_aliases": (s.get("studio") or {}).get("aliases") or [],
                     "performers": [p["performer"]["name"] for p in s.get("performers") or []]})
     return out
 

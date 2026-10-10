@@ -2216,10 +2216,21 @@ function clearRequestSearch() {
   $("#request-search")?.remove();
 }
 
+// Private: a search always offers to look for new scenes too, right under the heading.
+function renderFindOffer(query) {
+  if (!isAdmin()) return;
+  const section = document.createElement("section");
+  section.id = "request-search";
+  section.className = "request-search find-offer";
+  section.innerHTML = `<div class="request-search-heading"><div><h2>Looking for something new?</h2><p class="hint">This list is what you already have. Omnarr can search your download sites for new scenes too.</p></div><div class="request-search-actions"><button class="primary-button" type="button" data-find-new>Find new scenes for “${esc(query)}”</button></div></div>`;
+  $(".results-head", $("#results-view")).after(section);
+  $("[data-find-new]", section).addEventListener("click", () => openFind(query));
+}
+
 function renderRequestSearch() {
   clearRequestSearch();
-  if (privateMode) return;
   const query = (params.get("q") || "").trim();
+  if (privateMode) { if (query) renderFindOffer(query); return; }
   if (!query) return;
   const controller = new AbortController();
   requestSearchController = controller;
@@ -3450,7 +3461,13 @@ function findTab(name) {
   if (name === "follow") loadFollows();
 }
 $$("[data-find-tab]", findDialog).forEach((tab) => tab.addEventListener("click", () => findTab(tab.dataset.findTab)));
-$("#find-open").addEventListener("click", () => { findDialog.showModal(); $("#find-q").focus(); });
+function openFind(query = "") {
+  findTab("find");
+  if (!findDialog.open) findDialog.showModal();
+  $("#find-q").value = query;
+  if (query) $("#find-form").requestSubmit(); else $("#find-q").focus();
+}
+$("#find-open").addEventListener("click", () => openFind((params.get("q") || "").trim()));
 $("#find-close").addEventListener("click", () => findDialog.close());
 
 function releaseRow(r) {

@@ -959,3 +959,5 @@ span.offline-work { border: 0; color: var(--muted); align-self: center; }
 .find-scenes li > div { display: grid; gap: 4px; min-width: 0; }
 .find-status-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
 @media (max-width: 560px) { .find-row { flex-direction: column; align-items: stretch; } .find-scenes li { grid-template-columns: 80px 1fr; } .find-scenes img, .find-noimg { width: 80px; } }
+.find-open { padding: 4px 12px; font-size: 12px; }
+.find-offer { margin-top: 0; margin-bottom: 18px; }

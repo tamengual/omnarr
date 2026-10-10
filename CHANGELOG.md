@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5 — 2026-10-10
+
+- **Private search offers new scenes.** Searching in Private now shows "Find new scenes for …" right under the heading, which opens Find with your words already searched. The banner button is easier to spot too.
+- **Studios however you spell them.** "Fratx", "fraternity x" and "FraternityX" all mean the same studio: Omnarr checks StashDB's names and nicknames, ignores spaces, and searches the spelling uploaders use (FratX scenes are mostly posted as FraternityX). Follows match a studio's nicknames too.
+- A short numeric scene code (like "485") only counts as a match together with the studio.
+
 ## 1.0.4 — 2026-10-10
 
 - **Find new scenes (Private, admins).** "Find & follow" in the unlocked private section searches your adult indexers the way uploaders actually name things. Omnarr first looks your words up on StashDB (through Stash's saved key) to work out the studio, performers and scene, then searches several spellings at once (the studio as one word or a domain, performers' first names, the studio's scene code, scene-style dates) and ranks results by how well they match what you meant, saying why. Pick one of the scenes it suggests to narrow it down. Download sends the release through Prowlarr to its download client.

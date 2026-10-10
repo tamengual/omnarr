@@ -18,12 +18,30 @@ JUNK = "[NewSensations.com] Ivy Wolfe, Dustin Daring - Tiny Ivy [2018, All Sex]"
 
 
 def test_phrasings_spell_it_like_uploaders():
-    assert af.phrasings("Sean Cody Dustin Ryder", None, {"Sean Cody"})[0] == "SeanCody Dustin Ryder"
+    assert af.phrasings("Sean Cody Dustin Ryder", None, {"Sean Cody"})[0].lower() == "seancody dustin ryder"
     qs = af.phrasings("", SCENE)
     assert qs[:3] == ["SeanCody Dustin Ryder", "SeanCody 1711", "Dustin Ryder"] and "SeanCody 13.12.22" in qs
     assert len(qs) <= af.MAX_QUERIES
     assert af.studio_forms("Broke Straight Boys")[:2] == ["BrokeStraightBoys", "BrokeStraightBoys.com"]
     assert "BSB" in af.studio_forms("Broke Straight Boys")
+
+
+def test_studio_spelled_any_way():
+    studios = {"FraternityX": ["FratX", "Fraternity X"], "Sean Cody": []}
+    assert af.named_studios("Fratx", studios)[0][:1] == ("FraternityX",)
+    assert af.named_studios("fraternity x dorm", studios)[0][2] == ["dorm"]
+    assert af.named_studios("seancody dustin", studios)[0][0] == "Sean Cody"
+    assert af.named_studios("frat party", studios) == []
+    assert af.phrasings("Fratx", None, studios)[0] == "FraternityX"
+    hit = af.score("[FraternityX.com] Dorm Party (Tony, Ryan) [2025]", "fratx", None, studios)
+    assert hit[2] and hit[0] >= 6
+
+
+def test_short_codes_need_the_studio():
+    scene = {"studio": "FratX", "studio_aliases": ["FraternityX"], "code": "485", "title": "Bred Booty", "performers": []}
+    assert not af.score("2026-07-16 Venere Moras - Summer Knits (485 pics)", "", scene)[2]
+    assert af.score("[FraternityX.com] 485 Bred Booty [2026]", "", scene)[2]
+    assert "FraternityX bred booty" in af.phrasings("", scene)
 
 
 def test_scoring_prefers_what_you_meant():
