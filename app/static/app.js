@@ -39,7 +39,7 @@ function publicParams(hash) {
   for (const key of [...clean.keys()]) {
     if (![...TEXT_PARAMS, ...BOOL_PARAMS, ...LIST_PARAMS, "q", "sort", "order", "view"].includes(key)) clean.delete(key);
   }
-  if (!["activity", "settings"].includes(clean.get("view"))) clean.delete("view");
+  if (!["activity", "settings", "devices"].includes(clean.get("view"))) clean.delete("view");
   for (const key of ["kind", "has", "format", "source"]) {
     const value = (clean.get(key) || "").split(",").filter((item) => item && !["scene", "stash"].includes(item.toLowerCase())).join(",");
     if (value) clean.set(key, value); else clean.delete(key);
@@ -365,6 +365,7 @@ async function boot() {
     $("#auth").hidden = true;
     $("#app").hidden = false;
     $("#logout").hidden = Boolean(status.ha_ingress);          // signed in through Home Assistant
+    viaHomeAssistant = Boolean(status.ha_ingress);
     setupPasswordSection(status);
     applyAdultOption(Boolean(status.adult_enabled));
     settingsWelcome = isAdmin() && Boolean(status.connections_needed);
@@ -968,12 +969,25 @@ function run() {
   stopActivity();
   const activity = !privateMode && params.get("view") === "activity";
   const settings = !privateMode && params.get("view") === "settings";
+  const devicesPage = !privateMode && params.get("view") === "devices";
   $("#activity-view").hidden = !activity;
   $("#settings-view").hidden = !settings;
+  $("#devices-view").hidden = !devicesPage;
   document.body.classList.toggle("activity-page", activity);
-  document.body.classList.toggle("settings-page", settings);
-  $("#filters-toggle").hidden = activity || settings;
+  document.body.classList.toggle("settings-page", settings || devicesPage);
+  $("#filters-toggle").hidden = activity || settings || devicesPage;
   renderKinds();
+  if (!devicesPage) devicesController?.abort();
+  if (devicesPage) {
+    stopSettings();
+    ++runSequence;
+    clearRequestSearch();
+    clearTimeout(queryTimer);
+    closeFilters();
+    $("#home-view").hidden = $("#results-view").hidden = true;
+    showDevices();
+    return;
+  }
   if (settings) {
     ++runSequence;
     clearRequestSearch();
@@ -984,7 +998,7 @@ function run() {
     if (!settingsController) {
       settingsController = new AbortController();
       loadMyAccount();
-      if (isAdmin()) { loadConnections(); loadAccounts(); loadInvites(); }
+      if (isAdmin()) { loadConnections(); loadAccounts(); loadInvites(); loadDevicesSettings(); }
     }
     return;
   }
@@ -1168,7 +1182,7 @@ $("#upload-options-form").addEventListener("submit", async (event) => {
 function applyAccountChrome() {
   $("#signed-in-user").textContent = currentUser?.username || "";
   $("#signed-in-user").title = currentUser?.username || "";
-  for (const id of ["settings-private", "settings-uploads", "settings-admin-connections", "settings-users", "reindex"]) $("#" + id).hidden = !isAdmin();
+  for (const id of ["settings-private", "settings-uploads", "settings-devices", "settings-admin-connections", "settings-users", "reindex"]) $("#" + id).hidden = !isAdmin();
   $("#upload-open").hidden = permissions.can_upload !== true;
   if (permissions.can_upload !== true) resetUpload();
 }
@@ -1435,6 +1449,139 @@ function openSettings() {
   $("#settings-title").focus();
 }
 
+// "Use on your devices": phones, e-readers, audiobook/comic apps and TVs. Sections for outside
+// apps appear only once an admin has filled in an address people can actually reach.
+let devicesController;
+let viaHomeAssistant = false;   // the Home Assistant sidebar address only works inside Home Assistant
+function openDevices() {
+  if (privateMode) leavePrivate("", false);
+  if ($("#detail").open) $("#detail").close();
+  closeFilters();
+  setParam("view", "devices");
+  $("#devices-title").focus();
+}
+
+async function showDevices() {
+  devicesController?.abort();
+  const controller = devicesController = new AbortController();
+  $("#devices-status").textContent = "Loading…";
+  try {
+    const data = await api("api/devices", { signal: controller.signal });
+    if (controller !== devicesController) return;
+    $("#devices-status").textContent = "";
+    renderDevices(data);
+  } catch (error) {
+    if (controller.signal.aborted || error.message === "login") return;
+    $("#devices-status").textContent = error.message;
+  }
+}
+
+function deviceAddress(url) {
+  return `<p class="device-address"><code>${esc(url)}</code><button type="button" class="text-button" data-copy="${esc(url)}">Copy</button></p>`;
+}
+
+function deviceSection(id, title, body) {
+  return `<section class="device-section" aria-labelledby="device-${id}"><h2 id="device-${id}">${title}</h2>${body}</section>`;
+}
+
+function renderDevices(data) {
+  const who = data.contact ? esc(data.contact) : "the person who invited you";
+  const apps = data.apps || {};
+  const canSave = isAdmin() || permissions.can_download === true;
+  const library = data.public_url || (viaHomeAssistant ? "" : `${location.origin}${location.pathname}`);
+  const login = (app) => `<p class="hint">This needs its own ${app} login. ${data.login_note ? esc(data.login_note) : `Ask ${who} for one; your Omnarr password doesn't work there.`}</p>`;
+  const privateNote = (app) => app?.private ? `<div class="device-note"><strong>Only on the private network.</strong> ${data.network_note ? esc(data.network_note) : `Ask ${who} to add you.`} The device you use has to be connected to it.</div>` : "";
+  const sections = [];
+
+  const where = library ? deviceAddress(library) : `<p>Open Omnarr the way you normally do. For its own address to use on a phone, ask ${who}.</p>`;
+  sections.push(deviceSection("app", "Install Omnarr as an app", `${where}<ul>
+    <li><strong>iPhone or iPad:</strong> open the address in Safari, tap <em>Share</em> → <em>Add to Home Screen</em>.</li>
+    <li><strong>Android:</strong> in Chrome tap <em>⋮</em> → <em>Add to Home screen</em> (or <em>Install app</em>). In Samsung Internet tap <em>☰</em> → <em>Add page to</em> → <em>Home screen</em>.</li>
+    <li><strong>Computer:</strong> in Chrome or Edge, use the install icon at the right end of the address bar.</li></ul>
+    <p class="hint">It then opens full-screen like any other app, and audiobooks keep playing with the screen locked.</p>`));
+
+  let read;
+  if (canSave) {
+    read = `<p>Open a book and use <em>Save to device</em> to download the ebook (an EPUB file). Then:</p><ul>
+      <li><strong>Kindle:</strong> send the file with Amazon's Send to Kindle. Share it to the Kindle app on your phone, upload it at <em>amazon.com/sendtokindle</em>, or email it to your Kindle's address (Amazon → Manage Your Content and Devices → Preferences → Personal Document Settings).</li>
+      <li><strong>Kobo, PocketBook and most other e-readers:</strong> plug the reader into a computer with its USB cable, copy the file onto it, then eject it.</li>
+      <li><strong>Reading apps on a phone or tablet:</strong> open the downloaded file in Apple Books, Google Play Books, or a reader app you like.</li></ul>
+      <p class="hint">Your place in a book on those devices stays on them. Omnarr keeps track of what you read in Omnarr.</p>`;
+  } else {
+    read = `<p>Read in Omnarr on any phone, tablet or computer. To put books on a Kindle or another e-reader, ask ${who} to let you save files to your device.</p>`;
+  }
+  if (apps.opds) read += `<h3>Browse the library from an e-reader app</h3><p>KOReader, Moon+ Reader, Librera, Thorium and other apps can add the library as an OPDS catalog at:</p>${deviceAddress(apps.opds.url)}${login("library catalog")}${privateNote(apps.opds)}`;
+  sections.push(deviceSection("read", "Ebooks on Kindle, Kobo and other e-readers", read));
+
+  let listen = `<p>Play audiobooks right here in Omnarr. It remembers your place on every device you sign in on.</p>${canSave ? "<p>For flights or no signal, use <em>Save to device</em> first. Audiobook files are large, so do it on Wi-Fi.</p>" : ""}`;
+  if (apps.abs) listen += `<h3>Prefer a dedicated audiobook app?</h3><p>The Audiobookshelf app (Android and iPhone) or Prologue (iPhone) can connect to:</p>${deviceAddress(apps.abs.url)}${login("Audiobookshelf")}${privateNote(apps.abs)}`;
+  sections.push(deviceSection("listen", "Audiobooks", listen));
+
+  if (apps.komga) sections.push(deviceSection("comics", "Comics in a comic app", `<p>Read comics in Omnarr, or in an app that connects to Komga, such as Mihon on Android (with its Komga extension) or Panels and Paperback on iPhone and iPad. Server address:</p>${deviceAddress(apps.komga.url)}${login("Komga")}${privateNote(apps.komga)}`));
+
+  let watch = "<p>Watch in Omnarr on a phone, tablet or computer. To get it onto a TV, mirror or cast your screen: AirPlay from an iPhone, or Cast and screen mirroring from Android.</p>";
+  if (apps.jellyfin) watch += `<h3>Use the Jellyfin app</h3><p>Jellyfin has free apps for phones and for most TVs and streaming boxes (Android TV and Google TV, Fire TV, Apple TV, Roku, LG, Samsung). When it asks for a server, enter:</p>${deviceAddress(apps.jellyfin.url)}${login("Jellyfin")}${privateNote(apps.jellyfin)}${apps.jellyfin.private ? "<p class=\"hint\">Many smart TVs can't join a private network. A streaming stick (Google TV, Fire TV, Apple TV) usually can.</p>" : ""}`;
+  sections.push(deviceSection("watch", "Movies and shows on your TV", watch));
+
+  sections.push(deviceSection("help", "Need help?", `<p>Take a screenshot of what you see and send it to ${who}.</p>`));
+  $("#devices-body").innerHTML = (isAdmin() ? '<p class="device-note">This is what everyone you invite sees. Change it in Settings → Help for your devices.</p>' : "") + sections.join("");
+  $$("[data-copy]", $("#devices-body")).forEach((button) => button.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "Copied"; }
+    catch { const range = document.createRange(); range.selectNodeContents(button.previousElementSibling); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); button.textContent = "Selected"; }
+    setTimeout(() => { button.textContent = "Copy"; }, 1600);
+  }));
+}
+
+const DEVICE_FORM_TEXT = ["contact", "login_note", "network_note", "jellyfin_url", "abs_url", "komga_url", "opds_url"];
+const DEVICE_FORM_FLAGS = ["jellyfin_private", "abs_private", "komga_private", "opds_private"];
+function fillDevicesSettings(values = {}) {
+  const form = $("#devices-settings-form");
+  for (const key of DEVICE_FORM_TEXT) form.elements[key].value = values[key] || "";
+  for (const key of DEVICE_FORM_FLAGS) form.elements[key].checked = Boolean(values[key]);
+}
+async function loadDevicesSettings() {
+  const controller = settingsController;
+  const form = $("#devices-settings-form");
+  $$("input, textarea, button[type=submit]", form).forEach((control) => { control.disabled = true; });
+  try {
+    const data = await api("api/setup/devices", { signal: controller.signal, cache: "no-store" });
+    if (controller !== settingsController) return;
+    fillDevicesSettings(data);
+    $$("input, textarea, button[type=submit]", form).forEach((control) => { control.disabled = false; });
+    connectionMessage($("#devices-settings-message"), "");
+  } catch (error) {
+    if (controller !== settingsController || error.message === "login") return;
+    connectionMessage($("#devices-settings-message"), error.message, "error");
+  }
+}
+$("#devices-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!isAdmin() || !settingsController) return;
+  const form = event.currentTarget;
+  const controller = settingsController;
+  const values = {};
+  for (const key of DEVICE_FORM_TEXT) values[key] = form.elements[key].value.trim();
+  for (const key of DEVICE_FORM_FLAGS) values[key] = form.elements[key].checked;
+  const save = $("button[type=submit]", form);
+  save.disabled = true;
+  connectionMessage($("#devices-settings-message"), "Saving…", "busy");
+  try {
+    const result = await api("api/setup/devices", { method: "POST", body: JSON.stringify(values), signal: controller.signal });
+    if (controller !== settingsController) return;
+    fillDevicesSettings(result.settings || values);
+    connectionMessage($("#devices-settings-message"), "Saved. People see this under “Use on your devices”.", "success");
+  } catch (error) {
+    if (controller !== settingsController || error.message === "login") return;
+    connectionMessage($("#devices-settings-message"), error.message, "error");
+  } finally {
+    if (controller === settingsController) save.disabled = false;
+  }
+});
+$("#devices-preview").addEventListener("click", openDevices);
+$("#settings-devices-open").addEventListener("click", openDevices);
+$("#devices-link").addEventListener("click", openDevices);
+$("#devices-done").addEventListener("click", () => { clearAll(); $("#home").focus(); });
+
 function stopSettings() {
   settingsController?.abort();
   settingsController = null;
@@ -1442,6 +1589,9 @@ function stopSettings() {
   settingsBusy = false;
   uploadOptionsReady = false;
   $("#upload-options-form").reset();
+  $("#devices-settings-form").reset();
+  $$("input, textarea, button[type=submit]", $("#devices-settings-form")).forEach((control) => { control.disabled = true; });
+  connectionMessage($("#devices-settings-message"), "");
   $$("input, button", $("#upload-options-form")).forEach((control) => { control.disabled = true; });
   connectionMessage($("#upload-options-message"), "");
   $("#settings-connections").replaceChildren();
@@ -1990,7 +2140,7 @@ function renderRequestSearch() {
     $("#results-view").append(section);
     return;
   }
-  section.innerHTML = '<div class="request-search-heading"><h2>Not in your library?</h2><div class="request-search-actions"><button class="secondary-button" type="button" data-screen-search>Search movies &amp; TV to request</button><button class="secondary-button" type="button" data-game-toggle aria-expanded="false" aria-controls="search-game-request">Request a game</button></div></div><div class="game-request" id="search-game-request" hidden><h3>Request a game</h3><div data-game-form></div></div><p class="hint" data-message aria-live="polite" aria-atomic="true"></p><div class="request-grid"></div>';
+  section.innerHTML = '<div class="request-search-heading"><h2>Not in your library?</h2><div class="request-search-actions"><button class="secondary-button" type="button" data-screen-search>Search movies &amp; TV to request</button><button class="secondary-button" type="button" data-book-search>Search books &amp; comics to request</button><button class="secondary-button" type="button" data-game-toggle aria-expanded="false" aria-controls="search-game-request">Request a game</button></div></div><div class="game-request" id="search-game-request" hidden><h3>Request a game</h3><div data-game-form></div></div><p class="hint" data-message aria-live="polite" aria-atomic="true"></p><div class="request-grid"></div>';
   $("#results-view").append(section);
   const gameRequest = $("#search-game-request", section);
   renderGameRequest($("[data-game-form]", gameRequest), query, { editable: true });
@@ -2017,6 +2167,29 @@ function renderRequestSearch() {
       message.textContent = error.message === "login" ? "Sign in to search for requests." : error.message;
     } finally {
       button.disabled = false;
+    }
+  });
+  const bookButton = $("[data-book-search]", section);
+  bookButton.addEventListener("click", async () => {
+    bookButton.disabled = true;
+    message.textContent = "Searching books & comics…";
+    try {
+      const data = await api(`api/request/book/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal });
+      if (controller.signal.aborted || !section.isConnected) return;
+      if (!data.enabled) {
+        $(".request-grid", section).replaceChildren();
+        message.textContent = "Book requests aren't set up on this server yet.";
+        return;
+      }
+      manualPick = data.manual_pick !== false;
+      const results = data.results || [];
+      renderRequestCards($(".request-grid", section), results, true, true);
+      message.textContent = results.length ? `${results.length} books and comics found for “${query}”.` : `No books or comics found for “${query}”.`;
+    } catch (error) {
+      if (controller.signal.aborted || !section.isConnected) return;
+      message.textContent = error.message === "login" ? "Sign in to search for requests." : error.message;
+    } finally {
+      bookButton.disabled = false;
     }
   });
 }

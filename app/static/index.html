@@ -111,6 +111,7 @@
             <button class="text-button" id="clear" type="button">Clear all filters</button>
             <div class="library-status" id="index-status" aria-live="polite"></div>
             <button class="text-button" id="reindex" type="button">Refresh library</button>
+            <button class="text-button" id="devices-link" type="button">Use on your devices</button>
             <button class="text-button muted-button" id="logout" type="button">Sign out</button>
           </section>
         </div>
@@ -136,10 +137,19 @@
           <div id="activity-body" class="activity-sections"></div>
         </section>
 
+        <section id="devices-view" class="devices-view" aria-labelledby="devices-title" hidden>
+          <div class="results-head">
+            <div><div class="eyebrow">Beyond the browser</div><h1 id="devices-title" tabindex="-1">Use on your devices</h1><p class="hint">Phones, e-readers, audiobook apps, and TVs.</p></div>
+            <button id="devices-done" class="secondary-button" type="button">Back to library</button>
+          </div>
+          <p id="devices-status" class="hint" role="status"></p>
+          <div id="devices-body" class="devices-body"></div>
+        </section>
+
         <section id="settings-view" class="settings-view" aria-labelledby="settings-title" hidden>
           <div class="results-head">
             <div><div class="eyebrow">Make Omnarr yours</div><h1 id="settings-title" tabindex="-1">Settings</h1><p class="hint">Connect and manage the apps behind your library.</p></div>
-            <button id="settings-done" class="secondary-button" type="button">Back to library</button>
+            <div class="head-actions"><button id="settings-devices-open" class="secondary-button" type="button">Use on your devices</button><button id="settings-done" class="secondary-button" type="button">Back to library</button></div>
           </div>
           <p id="settings-welcome" class="settings-welcome" hidden>Connect the apps you use — everything is optional; you can add more later.</p>
           <section id="settings-private" class="settings-options" aria-labelledby="settings-private-label" hidden>
@@ -158,6 +168,28 @@
               <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save</button></div>
             </form>
             <p id="upload-options-message" class="connection-message" role="status" aria-live="polite"></p>
+          </section>
+          <section id="settings-devices" class="settings-options" aria-labelledby="settings-devices-title" hidden>
+            <h2 id="settings-devices-title">Help for your devices</h2>
+            <p id="devices-settings-help" class="hint">What people see on “Use on your devices”. Everything is optional. Fill in an app's address only if people can reach it from where they are, and give them a login for it: Omnarr accounts don't work in those apps. The address people install Omnarr from is the public address under Uploads and sharing.</p>
+            <form id="devices-settings-form" class="password-form" aria-describedby="devices-settings-help">
+              <label class="field">What people should call you (e.g. your first name)<input name="contact" maxlength="80" autocomplete="off" disabled></label>
+              <label class="field">How people get a login for the apps below<textarea name="login_note" rows="2" maxlength="500" placeholder="e.g. Message me and I'll set one up." disabled></textarea></label>
+              <label class="field">Private network instructions (only if some apps need it, e.g. Tailscale)<textarea name="network_note" rows="2" maxlength="500" placeholder="e.g. Ask me for a Tailscale invite, install the Tailscale app and switch it on." disabled></textarea></label>
+              <fieldset class="device-app-fields">
+                <legend>Outside apps (leave empty to hide)</legend>
+                <label class="field">Jellyfin address, for TV and phone video apps<input name="jellyfin_url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" disabled></label>
+                <label class="check"><input name="jellyfin_private" type="checkbox" disabled><span>Jellyfin only works on the private network</span></label>
+                <label class="field">Audiobookshelf address, for audiobook apps<input name="abs_url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" disabled></label>
+                <label class="check"><input name="abs_private" type="checkbox" disabled><span>Audiobookshelf only works on the private network</span></label>
+                <label class="field">Komga address, for comic apps<input name="komga_url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" disabled></label>
+                <label class="check"><input name="komga_private" type="checkbox" disabled><span>Komga only works on the private network</span></label>
+                <label class="field">OPDS catalog address, for e-reader apps (e.g. Calibre-Web's …/opds)<input name="opds_url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…/opds" disabled></label>
+                <label class="check"><input name="opds_private" type="checkbox" disabled><span>The catalog only works on the private network</span></label>
+              </fieldset>
+              <div class="connection-actions"><button class="primary-button" type="submit" disabled>Save</button><button id="devices-preview" class="secondary-button" type="button">See what people see</button></div>
+            </form>
+            <p id="devices-settings-message" class="connection-message" role="status" aria-live="polite"></p>
           </section>
           <section class="settings-options" aria-labelledby="my-account-title">
             <h2 id="my-account-title">My account</h2>

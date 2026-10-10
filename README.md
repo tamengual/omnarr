@@ -10,8 +10,8 @@ Omnarr is the front end.
 
 ![Omnarr's home page: search, filters, and Continue for books, audiobooks and TV in progress](docs/images/start.webp)
 
-> Status: early (v0.4). It runs every day on one home server. Expect rough edges, and
-> please file issues.
+> Status: 1.0. It runs every day on a home server shared with family and friends. Please
+> file issues.
 
 ## What it does
 
@@ -31,8 +31,8 @@ Omnarr is the front end.
   Open *Avatar: The Last Airbender* and you get Korra, the films, the live-action series,
   the novels, the comics and the games.
 - **Request from anything:** missing episodes and movies (Seerr → Sonarr/Radarr), books,
-  audiobooks and comics (Shelfmark), and games (ROMarr). That includes anything in a
-  related list.
+  audiobooks and comics (Shelfmark, or ReadMeABook for audiobooks), and games (ROMarr). That
+  includes anything in a related list, and any title you search for that isn't in the library.
 - **Keep looking.** Wanted books are re-searched on a schedule until an acceptable copy turns up.
   "Search harder" runs a free-text Prowlarr search and pushes the release to Sonarr or Radarr.
 - **Play and read in the browser.** Video plays from Jellyfin (direct or transcoded HLS), and
@@ -73,13 +73,16 @@ Every integration is optional. Connect the ones you use.
 | BookBridge | Cross-app reading positions, format links, ebook-reader position sync | `database.db`, mounted read-only; KOSync login for sync |
 | Komga | Comics and manga | API key |
 | Jellyfin | Movies, shows, watched state, playback | API key |
+| Plex | Movies, shows, watched state, playback | Server address (+ token unless Omnarr's network is allowed without sign-in) |
 | Sonarr / Radarr | Episodes and movies, downloads, search | API key |
 | Seerr / Jellyseerr / Overseerr | Movie and TV requests | API key |
 | Prowlarr | "Search harder" | API key |
 | Shelfmark | Book and audiobook requests | API key |
+| ReadMeABook | Audiobook requests | API token |
 | RomM | Games | Client API token |
 | ROMarr | Game requests | API key |
 | Stash | Private section | API key |
+| Your own | Anything else: a library feed (JSON), a request webhook, or a Python plug-in | See [docs/extending.md](docs/extending.md) |
 
 ## Install (Docker)
 
@@ -174,6 +177,14 @@ about their own requests. Admins are emailed when something needs approval.
 
 **On phones**, open Omnarr in Safari or Chrome and choose *Add to Home Screen*. It gets its
 own icon and opens full screen, like an app.
+
+**Use on your devices.** Everyone gets a built-in help page (Settings or the menu → *Use on
+your devices*) for installing Omnarr on a phone, sending books to a Kindle or Kobo, and
+listening and watching. Steps that need a permission only show to people who have it. In
+**Settings → Help for your devices** you can add your own notes and the addresses of
+Jellyfin, Audiobookshelf, Komga and an OPDS catalog, so people can also use those apps on
+TVs and e-readers. Each section stays hidden until you fill it in. Those apps need their own
+logins, and you can say how people get one.
 
 **One account is all they need.** Whatever someone plays in Omnarr (position, finished, their
 "Continue" row) is saved in Omnarr under their account. They never have to create Jellyfin

@@ -28,7 +28,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import extend                                    # noqa: E402
+from . import devices, extend                           # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -1623,6 +1623,75 @@ async def api_request_game(request: Request):
 def api_request_search(q: str):
     """Search Seerr for movies/TV not in the library."""
     return {"results": requests_.seerr_search(cfg, q) if q.strip() else []}
+
+
+@app.get("/api/request/book/search")
+def api_book_search(q: str):
+    """Books and comics to request from search. With Shelfmark this is its metadata search (covers,
+    authors, years); with only a webhook or plug-in taking book requests, the typed title itself."""
+    q = q.strip()
+    if not q or not _can_request_books():
+        return {"results": [], "enabled": _can_request_books(), "manual_pick": False}
+    shelfmark = requests_.shelfmark_enabled(cfg)
+    if not shelfmark:
+        return {"results": [{"kind": "book", "title": q, "label": q, "authors": [], "year": "", "poster": "",
+                             "status": "not_requested", "in_library": None}], "enabled": True, "manual_pick": False}
+    by_tmdb, by_title = _library_index()
+    out, seen = [], set()
+    for kind, fmt in (("book", "ebook"), ("comic", "comic")):
+        try:
+            cands = requests_.book_candidates(cfg, q, wanted.shelfmark_type(fmt))
+        except Exception as e:
+            log.debug("book search (%s) failed: %s", fmt, e)
+            continue
+        for c in cands[:8]:
+            title = (c.get("title") or "").strip()
+            authors = c.get("authors") or []
+            key = (normalize.key(title), normalize.surname(authors[0]) if authors else "")
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            item = {"kind": kind, "title": title, "label": title, "authors": authors, "year": c.get("year") or "",
+                    "poster": c.get("cover") or "", "status": "not_requested", "in_library": None}
+            owned = _match_library(item, by_tmdb, by_title)
+            if owned:
+                item.update(status="available", in_library=owned)
+            out.append(item)
+    return {"results": out, "enabled": True, "manual_pick": True}
+
+
+@app.get("/api/devices")
+def api_devices():
+    """The "Your devices" page: the admin's notes and the outside-app addresses they filled in."""
+    con = state()
+    try:
+        conf = devices.load(_setting(con, devices.KEY))
+        public = (_setting(con, "public_url") or "").strip()
+    finally:
+        con.close()
+    return {"public_url": public, **devices.visible(conf)}
+
+
+@app.get("/api/setup/devices")
+def api_devices_settings():
+    con = state()
+    try:
+        return devices.clean(devices.load(_setting(con, devices.KEY)))
+    finally:
+        con.close()
+
+
+@app.post("/api/setup/devices")
+async def api_devices_save(request: Request):
+    try:
+        conf = devices.clean(await request.json())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    con = state()
+    with con:
+        con.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (devices.KEY, json.dumps(conf)))
+    con.close()
+    return {"ok": True, "settings": conf}
 
 
 @app.get("/api/request/book/candidates")

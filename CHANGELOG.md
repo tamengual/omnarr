@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0 — 2026-10-10
+
+Omnarr 1.0. Everything from the 0.x releases, plus:
+
+- **Use on your devices.** A built-in help page for everyone you invite: installing Omnarr on a phone, sending books to a Kindle, Kobo or other e-reader, listening, and watching on a TV. Steps that need a permission only show to people who have it. Admins can add their own notes and the addresses of Jellyfin, Audiobookshelf, Komga and an OPDS catalog (Settings → Help for your devices); each of those sections appears only once it's filled in, and marks apps that need a private network such as Tailscale.
+- **Request books and comics from search.** When a title isn't in the library, search now offers books and comics to request, not just movies, TV and games.
+- **Plex.** Movies and shows from Plex: library, artwork, episodes, in-browser playback, watched progress and downloads. Plex web-app addresses (…/web) are accepted.
+- **ReadMeABook** can take audiobook requests instead of Shelfmark.
+- **Bring your own apps:** a custom library feed (JSON), a custom request webhook, and Python plug-ins. See docs/extending.md.
+
 ## 0.5.6 — 2026-10-04
 
 - Audiobooks keep trying to reconnect when the connection drops and comes back: several retries, a little further apart each time, instead of stopping after the first failed attempt.
