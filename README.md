@@ -196,6 +196,13 @@ in their connection. Adult libraries stay hidden for people without that permiss
 off in Settings → Help for your devices. Deleting someone's Omnarr account removes these logins
 too.
 
+**Find and follow (Private).** In the unlocked private section, admins can search their adult
+indexers by meaning rather than exact release names: Omnarr looks the words up on StashDB
+(through Stash), rewrites them the way uploaders name things, searches several spellings at
+once and ranks what comes back. Follow a studio or performer and their new scenes download on
+their own when there's a clear match. Needs Prowlarr with adult indexers tagged `xxx` and a
+download client in Prowlarr; set a downloads folder on the Stash connection so Stash scans and
+identifies new files.
 **Who's playing.** Admins see, at the top of Activity, what people are watching, listening to
 and reading in Omnarr right now, plus each person's recent history.
 

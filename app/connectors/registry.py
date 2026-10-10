@@ -250,7 +250,9 @@ APPS = [
      "about": "Request games by title and platform.", "fields": [URL("ROMarr", "http://host:6868"), KEY("ROMarr → Settings → General → API key.")]},
     # ── private ──
     {"key": "stash", "label": "Stash (private, PIN-locked)", "category": "Private", "test": _test_stash,
-     "about": "Adult scenes, shown only in the PIN-locked private section.", "fields": [URL("Stash", "http://host:9999"), KEY("Stash → Settings → Security → API key."), BROWSER]},
+     "about": "Adult scenes, shown only in the PIN-locked private section.", "fields": [URL("Stash", "http://host:9999"), KEY("Stash → Settings → Security → API key."), BROWSER,
+                {"key": "downloads_path", "label": "Downloads folder, as Stash sees it (optional)", "type": "path", "required": False,
+                 "placeholder": "/downloads", "help": "Where scenes you download from Private land. Omnarr has Stash scan it and identify new files on StashDB."}]},
     # ── other ──
     {"key": "email", "label": "Email (for invitations)", "category": "Other", "test": _test_email,
      "about": "Lets Omnarr email sign-up invitations. Any SMTP server works; for Gmail use smtp.gmail.com, port 587 and an app password.",

@@ -126,6 +126,7 @@ function updatePrivateChrome() {
   $("#private-toggle").hidden = !adultStatus.enabled || !adultStatus.allowed;
   $("#private-toggle").setAttribute("aria-pressed", String(privateMode));
   $("#private-banner").hidden = !privateMode;
+  $("#find-open").hidden = !(privateMode && isAdmin());
   document.body.classList.toggle("private-mode", privateMode);
   $("#author-label").textContent = privateMode ? "Performer" : "Author / company";
   $("#author").placeholder = privateMode ? "Any performer" : "Any author or company";
@@ -3439,3 +3440,115 @@ window.OmnarrOffline = (() => {
 })();
 
 boot();
+
+// ── Private: find new scenes, follow studios/performers (admins, unlocked) ──
+const findDialog = $("#find-dialog");
+const gbLabel = (bytes) => !bytes ? "" : bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+function findTab(name) {
+  $$("[data-find-tab]", findDialog).forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.findTab === name)));
+  $$("[data-find-panel]", findDialog).forEach((panel) => { panel.hidden = panel.dataset.findPanel !== name; });
+  if (name === "follow") loadFollows();
+}
+$$("[data-find-tab]", findDialog).forEach((tab) => tab.addEventListener("click", () => findTab(tab.dataset.findTab)));
+$("#find-open").addEventListener("click", () => { findDialog.showModal(); $("#find-q").focus(); });
+$("#find-close").addEventListener("click", () => findDialog.close());
+
+function releaseRow(r) {
+  const info = [gbLabel(r.size), r.seeders != null ? `${r.seeders} seeding` : "", r.indexer, r.published].filter(Boolean).map(esc).join(" · ");
+  const why = r.why?.length ? `<span class="find-why">Matches ${r.why.map(esc).join(", ")}</span>` : "";
+  return `<li class="find-row"><div><strong>${esc(r.title)}</strong><span>${info}</span>${why}</div>
+    <div class="find-actions">${r.info_url ? `<a class="text-button" href="${esc(r.info_url)}" target="_blank" rel="noopener noreferrer">Details</a>` : ""}
+    <button type="button" class="secondary-button" data-grab="${esc(r.guid)}" data-indexer="${esc(r.indexer_id)}" data-title="${esc(r.title)}">Download</button></div></li>`;
+}
+
+let findSeq = 0;
+async function runFind(q, scene = null) {
+  const seq = ++findSeq;
+  $("#find-status").textContent = scene ? `Searching for “${scene.title}”…` : "Searching your adult indexers…";
+  $("#find-results").innerHTML = "";
+  try {
+    const data = await api("api/private/find", { method: "POST", body: JSON.stringify({ q, scene }) });
+    if (seq !== findSeq) return;
+    const best = data.results.filter((r) => r.match), other = data.results.filter((r) => !r.match);
+    $("#find-status").textContent = `Searched ${data.indexers.length} indexer${data.indexers.length === 1 ? "" : "s"} for: ${data.queries.join(" · ")}${data.errors.length ? ` (some searches failed)` : ""}`;
+    $("#find-results").innerHTML = (best.length ? `<h3>Best matches</h3><ul class="find-list">${best.map(releaseRow).join("")}</ul>` : "<p class=\"hint\">No clear matches. Try other names, or pick a scene above.</p>")
+      + (other.length ? `<details class="activity-overflow"><summary>Other results (${other.length})</summary><ul class="find-list">${other.map(releaseRow).join("")}</ul></details>` : "");
+  } catch (error) {
+    if (seq === findSeq) $("#find-status").textContent = error.message;
+  }
+}
+
+$("#find-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const q = $("#find-q").value.trim();
+  if (!q) return;
+  $("#find-scenes").innerHTML = "";
+  runFind(q);
+  try {
+    const { scenes } = await api(`api/private/find/understand?q=${encodeURIComponent(q)}`);
+    if (!scenes.length || $("#find-q").value.trim() !== q) return;
+    $("#find-scenes").innerHTML = `<h3>Did you mean one of these scenes?</h3><ul class="find-scenes">${scenes.map((s, i) => `<li>
+      ${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy">` : '<span class="find-noimg"></span>'}
+      <div><strong>${esc(s.title)}</strong><span>${esc([s.studio, s.date, s.performers.join(", ")].filter(Boolean).join(" · "))}</span>
+      <div class="find-actions"><button type="button" class="secondary-button" data-scene="${i}">Find this scene</button>${s.studio_id ? `<button type="button" class="text-button" data-follow-studio="${i}">Follow ${esc(s.studio)}</button>` : ""}</div></div></li>`).join("")}</ul>`;
+    $$("[data-scene]", $("#find-scenes")).forEach((b) => b.addEventListener("click", () => runFind(q, scenes[Number(b.dataset.scene)])));
+    $$("[data-follow-studio]", $("#find-scenes")).forEach((b) => b.addEventListener("click", async () => {
+      const s = scenes[Number(b.dataset.followStudio)];
+      b.disabled = true;
+      try { await api("api/private/follows", { method: "POST", body: JSON.stringify({ kind: "studio", id: s.studio_id, name: s.studio }) }); b.textContent = `Following ${s.studio}`; }
+      catch (error) { b.disabled = false; b.textContent = error.message; }
+    }));
+  } catch { /* the search itself still runs */ }
+});
+
+$("#find-results").addEventListener("click", async (event) => {
+  const b = event.target.closest("[data-grab]");
+  if (!b) return;
+  b.disabled = true;
+  b.textContent = "Sending…";
+  try {
+    const r = await api("api/private/find/grab", { method: "POST", body: JSON.stringify({ guid: b.dataset.grab, indexer_id: b.dataset.indexer, title: b.dataset.title }) });
+    b.textContent = r.stash_scan ? "Downloading · Stash will pick it up" : "Downloading";
+  } catch (error) {
+    b.disabled = false;
+    b.textContent = "Download";
+    $("#find-status").textContent = error.message;
+  }
+});
+
+const WANTED_STATUS = { waiting: "Looking", downloading: "Downloading", have: "In Stash", not_found: "Not found" };
+async function loadFollows() {
+  try {
+    const data = await api("api/private/follows", { cache: "no-store" });
+    $("#follow-list").innerHTML = data.follows.length ? `<ul class="find-list">${data.follows.map((f) => `<li class="find-row"><div><strong>${esc(f.name)}</strong><span>${f.kind === "studio" ? "Studio" : "Performer"}</span></div><div class="find-actions"><button type="button" class="text-button" data-unfollow="${esc(f.kind)}/${esc(f.id)}">Unfollow</button></div></li>`).join("")}</ul>` : '<p class="hint">Nothing yet. Look up a studio or performer above.</p>';
+    $("#follow-wanted").innerHTML = data.wanted.length ? `<ul class="find-list">${data.wanted.map((w) => `<li class="find-row"><div><strong>${esc(w.title)}</strong><span>${esc([w.studio, w.date, (w.performers || []).join(", ")].filter(Boolean).join(" · "))}</span>${w.release ? `<span class="find-why">${esc(w.release)}</span>` : ""}</div><div class="find-actions"><span class="find-status-chip" data-status="${esc(w.status)}">${esc(WANTED_STATUS[w.status] || w.status)}</span></div></li>`).join("")}</ul>` : '<p class="hint">New scenes from what you follow show up here.</p>';
+  } catch (error) {
+    $("#follow-list").textContent = error.message;
+  }
+}
+$("#follow-list").addEventListener("click", async (event) => {
+  const b = event.target.closest("[data-unfollow]");
+  if (!b) return;
+  b.disabled = true;
+  await api(`api/private/follows/${b.dataset.unfollow.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" }).catch(() => {});
+  loadFollows();
+});
+$("#follow-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const q = $("#follow-q").value.trim();
+  if (!q) return;
+  $("#follow-lookup").innerHTML = '<p class="hint">Looking it up on StashDB…</p>';
+  try {
+    const data = await api(`api/private/follows/lookup?q=${encodeURIComponent(q)}`);
+    const rows = [...data.studios.map((s) => ({ ...s, kind: "studio" })), ...data.performers.map((p) => ({ ...p, kind: "performer" }))];
+    $("#follow-lookup").innerHTML = rows.length ? `<ul class="find-list">${rows.map((r, i) => `<li class="find-row"><div><strong>${esc(r.name)}</strong><span>${esc([r.kind === "studio" ? "Studio" : "Performer", r.note].filter(Boolean).join(" · "))}</span></div><div class="find-actions"><button type="button" class="secondary-button" data-follow="${i}">Follow</button></div></li>`).join("")}</ul>` : '<p class="hint">Nothing on StashDB by that name.</p>';
+    $$("[data-follow]", $("#follow-lookup")).forEach((b) => b.addEventListener("click", async () => {
+      const r = rows[Number(b.dataset.follow)];
+      b.disabled = true;
+      try { await api("api/private/follows", { method: "POST", body: JSON.stringify({ kind: r.kind, id: r.id, name: r.name }) }); b.textContent = "Following"; loadFollows(); }
+      catch (error) { b.disabled = false; b.textContent = error.message; }
+    }));
+  } catch (error) {
+    $("#follow-lookup").innerHTML = `<p class="hint">${esc(error.message)}</p>`;
+  }
+});

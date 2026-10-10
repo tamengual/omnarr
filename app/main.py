@@ -29,7 +29,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import devices, extend, provision, tailnet, watching  # noqa: E402
+from . import adultfind, devices, extend, provision, tailnet, watching  # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -1995,6 +1995,86 @@ def _revoke_private_access(account_id, username):
     return ""
 
 
+# ── private: find new scenes and follow studios/performers (admins, PIN unlocked) ──
+def _private_admin(request):
+    sess = _session(request)
+    if not (_owner_identity(sess) and _adult_ok(sess)):
+        raise HTTPException(403, "Unlock Private first (admins only)")
+    if not (cfg.source("prowlarr") and cfg.source("stash")):
+        raise HTTPException(400, "Connect Prowlarr and Stash first")
+    return sess
+
+
+@app.get("/api/private/find/understand")
+def api_find_understand(q: str, request: Request):
+    _private_admin(request)
+    try:
+        return {"scenes": adultfind.understand(cfg, q)}
+    except Exception as e:
+        raise HTTPException(502, f"StashDB lookup failed: {type(e).__name__}")
+
+
+@app.post("/api/private/find")
+async def api_find(request: Request):
+    _private_admin(request)
+    body = await request.json()
+    q, scene = str(body.get("q") or "").strip()[:200], body.get("scene") if isinstance(body.get("scene"), dict) else None
+    if not q and not scene:
+        raise HTTPException(400, "Type something to look for")
+    try:
+        return await asyncio.to_thread(adultfind.find, cfg, q, scene)
+    except adultfind.httpx.HTTPError as e:
+        raise HTTPException(502, f"Prowlarr: {type(e).__name__}")
+
+
+@app.post("/api/private/find/grab")
+async def api_find_grab(request: Request):
+    sess = _private_admin(request)
+    b = await request.json()
+    try:
+        await asyncio.to_thread(adultfind.grab, cfg, STATE, sess["account"]["id"], str(b.get("guid") or ""),
+                                int(b.get("indexer_id") or 0), str(b.get("title") or ""))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    live._audit(STATE, "adult_grab", {"by": sess["account"]["username"]}, str(b.get("title") or "")[:200])
+    return {"ok": True, "stash_scan": bool((cfg.source("stash") or {}).get("downloads_path"))}
+
+
+@app.get("/api/private/follows")
+def api_follows(request: Request):
+    _private_admin(request)
+    return {"follows": adultfind.follows(STATE), "wanted": adultfind.wanted_list(STATE)}
+
+
+@app.get("/api/private/follows/lookup")
+def api_follows_lookup(q: str, request: Request):
+    _private_admin(request)
+    try:
+        return adultfind.lookup(cfg, q)
+    except Exception as e:
+        raise HTTPException(502, f"StashDB lookup failed: {type(e).__name__}: {e}"[:200])
+
+
+@app.post("/api/private/follows")
+async def api_follow_add(request: Request):
+    _private_admin(request)
+    b = await request.json()
+    try:
+        adultfind.follow(STATE, str(b.get("kind") or ""), str(b.get("id") or ""), str(b.get("name") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    threading.Thread(target=adultfind.check_follows, args=(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r)),
+                     daemon=True).start()                       # look for its latest scenes right away
+    return {"ok": True, "follows": adultfind.follows(STATE)}
+
+
+@app.delete("/api/private/follows/{kind}/{fid}")
+def api_follow_remove(kind: str, fid: str, request: Request):
+    _private_admin(request)
+    adultfind.unfollow(STATE, kind, fid)
+    return {"ok": True, "follows": adultfind.follows(STATE)}
+
+
 @app.get("/api/private-access")
 def api_private_access(request: Request):
     """This person's private-network access: none, pending, denied, invited (with the link) or connected."""
@@ -2308,10 +2388,30 @@ def _wanted_loop():
         time.sleep(30 * 60)
 
 
+def _adult_loop():
+    """Followed studios/performers every 6 hours; while downloads are fresh, have Stash pick them up."""
+    time.sleep(300)
+    last_follow = 0.0
+    while True:
+        try:
+            if _adult_enabled() and cfg.source("stash") and cfg.source("prowlarr"):
+                if time.time() - last_follow > 6 * 3600:
+                    last_follow = time.time()
+                    res = adultfind.check_follows(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))
+                    if res.get("new") or res.get("grabbed"):
+                        log.info("followed scenes: %s", res)
+                if adultfind.pending(STATE):
+                    adultfind.scan_and_identify(cfg)
+        except Exception as e:
+            log.error("adult follow loop failed: %s", e, exc_info=True)
+        time.sleep(15 * 60)
+
+
 def _startup():
     os.makedirs(os.path.dirname(INDEX) or ".", exist_ok=True)
     threading.Thread(target=_scheduler, name="indexer", daemon=True).start()
     threading.Thread(target=_wanted_loop, name="wanted", daemon=True).start()
+    threading.Thread(target=_adult_loop, name="adult-follow", daemon=True).start()
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

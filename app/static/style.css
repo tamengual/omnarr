@@ -941,3 +941,21 @@ span.offline-work { border: 0; color: var(--muted); align-self: center; }
 .my-apps-form { display: grid; gap: 10px; margin-top: 12px; }
 .my-apps-form fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
 .my-apps-form legend { font-weight: 700; margin-bottom: 4px; }
+.find-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100svh - 32px); overflow-y: auto; border: 1px solid var(--line); border-radius: 4px 4px 22px 4px; }
+.find-tabs { display: flex; gap: 6px; margin: 4px 0 12px; }
+.find-tabs [role=tab] { border: 1px solid var(--line); background: none; color: var(--muted); padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+.find-tabs [aria-selected=true] { color: var(--text, inherit); border-color: var(--scene); background: color-mix(in srgb, var(--scene) 12%, transparent); }
+.find-form { display: flex; gap: 8px; }
+.find-form input { flex: 1; min-width: 0; }
+.find-list, .find-scenes { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.find-row { display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.find-row > div:first-child { min-width: 0; display: grid; gap: 2px; }
+.find-row strong { font-weight: 600; overflow-wrap: anywhere; }
+.find-row span, .find-scenes span { font-size: 12px; color: var(--muted); }
+.find-why { color: var(--scene) !important; }
+.find-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }
+.find-scenes li { display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: start; }
+.find-scenes img, .find-noimg { width: 120px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--bg-raised); }
+.find-scenes li > div { display: grid; gap: 4px; min-width: 0; }
+.find-status-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+@media (max-width: 560px) { .find-row { flex-direction: column; align-items: stretch; } .find-scenes li { grid-template-columns: 80px 1fr; } .find-scenes img, .find-noimg { width: 80px; } }

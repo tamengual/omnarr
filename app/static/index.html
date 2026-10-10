@@ -118,7 +118,7 @@
       </aside>
 
       <main class="content" id="content">
-        <div id="private-banner" class="private-banner" hidden><span id="private-until"></span><div><button id="private-exit" class="text-button muted-button" type="button">Back to library</button><button id="private-lock" class="text-button" type="button">Lock now</button></div></div>
+        <div id="private-banner" class="private-banner" hidden><span id="private-until"></span><div><button id="private-exit" class="text-button muted-button" type="button">Back to library</button><button id="find-open" class="text-button" type="button" hidden>Find &amp; follow</button><button id="private-lock" class="text-button" type="button">Lock now</button></div></div>
         <p id="private-notice" class="private-notice hint" role="status" hidden></p>
         <section id="home-view" class="home-view" aria-labelledby="home-title" hidden>
           <div class="hero">
@@ -292,6 +292,24 @@
         <p id="pin-error" class="err" role="alert"></p>
         <button id="pin-submit" class="primary-button" type="submit">Unlock</button>
       </form>
+    </dialog>
+    <dialog id="find-dialog" class="find-dialog" aria-labelledby="find-title">
+      <div class="pin-heading"><h2 id="find-title">Find new scenes</h2><button id="find-close" class="icon-button" type="button" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="find-tabs" role="tablist"><button type="button" role="tab" data-find-tab="find" aria-selected="true">Find</button><button type="button" role="tab" data-find-tab="follow" aria-selected="false">Following</button></div>
+      <section data-find-panel="find">
+        <form id="find-form" class="find-form"><input id="find-q" type="search" placeholder="Studio, performers, scene…" autocomplete="off" aria-label="What to look for"><button class="primary-button" type="submit">Search</button></form>
+        <p class="hint">Type it however you like. Omnarr looks it up on StashDB, then searches your adult indexers with the names uploaders actually use.</p>
+        <div id="find-scenes"></div>
+        <p id="find-status" class="hint" role="status" aria-live="polite"></p>
+        <div id="find-results"></div>
+      </section>
+      <section data-find-panel="follow" hidden>
+        <p class="hint">Follow a studio or performer and Omnarr downloads their new scenes by itself when it finds a clear match. It checks every 6 hours, and skips anything already in Stash.</p>
+        <form id="follow-form" class="find-form"><input id="follow-q" type="search" placeholder="Studio or performer" autocomplete="off" aria-label="Studio or performer to follow"><button class="secondary-button" type="submit">Look up</button></form>
+        <div id="follow-lookup"></div>
+        <h3>Following</h3><div id="follow-list"></div>
+        <h3>New scenes</h3><div id="follow-wanted"></div>
+      </section>
     </dialog>
     <dialog id="upload-dialog" class="upload-dialog" aria-labelledby="upload-title" aria-describedby="upload-note">
       <div class="pin-heading"><h2 id="upload-title">Upload</h2><button id="upload-close" class="icon-button" type="button" aria-label="Close upload"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>

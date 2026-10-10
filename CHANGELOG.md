@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4 — 2026-10-10
+
+- **Find new scenes (Private, admins).** "Find & follow" in the unlocked private section searches your adult indexers the way uploaders actually name things. Omnarr first looks your words up on StashDB (through Stash's saved key) to work out the studio, performers and scene, then searches several spellings at once (the studio as one word or a domain, performers' first names, the studio's scene code, scene-style dates) and ranks results by how well they match what you meant, saying why. Pick one of the scenes it suggests to narrow it down. Download sends the release through Prowlarr to its download client.
+- **Follow studios and performers.** New scenes from what you follow download by themselves when there's a clear match (the studio plus its performers, or the scene code). Omnarr checks every 6 hours, skips scenes already in Stash, and keeps looking for 45 days.
+- **Stash picks up downloads.** Set a downloads folder on the Stash connection and Omnarr has Stash scan it and identify new files on StashDB.
+
 ## 1.0.3 — 2026-10-10
 
 - Making your own BookBridge login works: Omnarr now reads the form token BookBridge 7.8 puts on its admin pages.
