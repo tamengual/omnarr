@@ -65,8 +65,8 @@ def invite_status(s, invite_id):
     """{"accepted": bool, "by": login name or ""} — or None if the invite no longer exists."""
     with _client(s) as c:
         r = c.get(f"/device-invites/{invite_id}")
-    if r.status_code == 404:
-        return None
+    if r.status_code == 404 or (r.status_code == 400 and "invalid invite" in r.text):
+        return None                                  # deleted (Tailscale answers 400 "invalid invite") or never existed
     r.raise_for_status()
     d = r.json()
     return {"accepted": bool(d.get("accepted")), "by": ((d.get("acceptedBy") or {}).get("loginName") or "")}
@@ -75,7 +75,7 @@ def invite_status(s, invite_id):
 def delete_invite(s, invite_id):
     with _client(s) as c:
         r = c.delete(f"/device-invites/{invite_id}")
-    return r.status_code in (200, 204, 404)
+    return r.status_code in (200, 204, 404) or (r.status_code == 400 and "invalid invite" in r.text)
 
 
 def test(s):

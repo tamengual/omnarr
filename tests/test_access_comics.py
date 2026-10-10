@@ -147,3 +147,22 @@ def test_tailnet_client_shapes(monkeypatch):
     assert calls[1] == ("POST", "/device/n1/device-invites", [{"multiUse": False, "allowExitNode": False, "email": "kim@example.com"}])
     with pytest.raises(LookupError):
         tailnet.find_device({"api_key": "k", "device": "nope"})
+
+
+def test_tailnet_treats_invalid_invite_as_gone(monkeypatch):
+    """Seen live: Tailscale answers a deleted invite with 400 {"message": "[unexpected]: invalid invite"}."""
+    from app import tailnet
+
+    class Gone:
+        status_code, text = 400, '{"message":"[unexpected]: invalid invite"}'
+        def raise_for_status(self): raise AssertionError("must not raise for a gone invite")
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, path): return Gone()
+        def delete(self, path): return Gone()
+    monkeypatch.setattr(tailnet.httpx, "Client", FakeClient)
+    assert tailnet.invite_status({"api_key": "k"}, "123") is None
+    assert tailnet.delete_invite({"api_key": "k"}, "123") is True
