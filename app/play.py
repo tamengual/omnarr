@@ -46,7 +46,7 @@ def _jf_base(cfg):
 
 
 def _strip_key(url):
-    url = re.sub(r"([?&])(api_key|ApiKey|X-Plex-Token)=[^&]*&?", r"\1", url)
+    url = re.sub(r"([?&])(api_key|ApiKey|apikey|X-Plex-Token)=[^&]*&?", r"\1", url)
     return url.rstrip("?&")
 
 

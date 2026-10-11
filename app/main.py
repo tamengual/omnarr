@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -1130,6 +1131,51 @@ async def api_action(request: Request):
         raise HTTPException(502, str(e))
 
 
+BROWSER_VIDEO = {"h264", "avc1", "vp8", "vp9", "av1"}   # codecs every browser plays without help
+BROWSER_FORMATS = {"mp4", "m4v", "mov", "webm"}
+
+
+def _stash_video(scene_id, request):
+    """A Stash scene for the in-app player (Private, unlocked): the file itself when the browser can
+    play it, otherwise Stash's own HLS conversion. Both go through /api/stream/stash."""
+    sess = _session(request)
+    if not (cfg.source("stash") and _adult_ok(sess)) or not scene_id.isdigit():
+        raise HTTPException(404, "Not found")
+    q = """query($id:ID!){ findScene(id:$id){ id title resume_time
+             files { basename duration format video_codec } paths { screenshot } } }"""
+    try:
+        with stash.client(cfg.source("stash"), timeout=30) as c:
+            sc = c.post("/graphql", json={"query": q, "variables": {"id": scene_id}}).json()["data"]["findScene"]
+    except Exception as e:
+        raise HTTPException(502, f"Stash: {type(e).__name__}")
+    if not sc or not sc.get("files"):
+        raise HTTPException(404, "Not found")
+    f = sc["files"][0]
+    direct = (f.get("format") or "").lower() in BROWSER_FORMATS and (f.get("video_codec") or "").lower() in BROWSER_VIDEO
+    mine, _ = playstate.get(STATE, identity.account_id.get(), "stash", scene_id)
+    resume = max(mine, sc.get("resume_time") or 0) if _owner_identity(sess) else mine     # Stash's place is the owner's
+    title = sc.get("title") or os.path.splitext(f.get("basename") or "")[0]
+    _play_labels[f"stash:{scene_id}"] = title
+    return {"type": "video", "source": "stash", "item_id": scene_id, "title": title,
+            "mode": "direct" if direct else "hls",
+            "url": f"api/stream/stash/scene/{scene_id}/stream" + ("" if direct else ".m3u8"),
+            "duration": f.get("duration") or 0, "resume": resume, "subtitles": [],
+            "poster": f"api/cover/stash:{scene_id}", "progress_sync": True, "app_sync": _owner_identity(sess)}
+
+
+def _stash_progress(scene_id, position, finished):
+    """Save the owner's place in Stash too (resume point; a finished play counts as a play)."""
+    q = ("mutation($id:ID!){ sceneAddPlay(id:$id) { count } }" if finished else
+         "mutation($id:ID!,$t:Float){ sceneSaveActivity(id:$id, resume_time:$t) }")
+    try:
+        with stash.client(cfg.source("stash"), timeout=15) as c:
+            r = c.post("/graphql", json={"query": q, "variables": {"id": scene_id, "t": 0 if finished else position}})
+        return r.status_code < 400 and not r.json().get("errors")
+    except Exception as e:
+        log.debug("stash progress failed: %s", e)
+        return False
+
+
 _episode_series = {}                                   # Jellyfin episode id -> series id (for progress)
 _play_labels = {}                                      # item id -> "Show — S01E02 · Name" (for Who's playing)
 
@@ -1139,6 +1185,8 @@ _play_labels = {}                                      # item id -> "Show — S0
 def api_play_video(item_id: str, request: Request):
     """Jellyfin movie/episode id, or "plex:<ratingKey>" -> {url (direct or HLS through our
     proxy), resume, subtitles...}."""
+    if item_id.startswith("stash:"):
+        return _stash_video(item_id[6:], request)
     if item_id.startswith("plex:"):
         if not cfg.source("plex"):
             raise HTTPException(404, "Plex not configured")
@@ -1201,8 +1249,18 @@ async def api_play_progress(request: Request):
             if _owner_identity(_session(request)):
                 ok = await asyncio.to_thread(play.plex_progress, cfg, rk, pos, dur, bool(b.get("finished")))
             return {"ok": ok}
+        if b.get("source") == "stash":
+            sid = str(b.get("item_id") or "")
+            if not (sid.isdigit() and _adult_ok(_session(request))):
+                raise HTTPException(404, "Not found")
+            playstate.record(STATE, identity.account_id.get(), "stash", sid, pos, dur, bool(b.get("finished")),
+                             label=_play_labels.get(f"stash:{sid}"))
+            ok = True
+            if _owner_identity(_session(request)):
+                ok = await asyncio.to_thread(_stash_progress, sid, pos, bool(b.get("finished")))
+            return {"ok": ok}
         if b.get("source") not in ("jellyfin", "abs"):
-            raise HTTPException(400, "source must be jellyfin, abs or plex")
+            raise HTTPException(400, "source must be jellyfin, abs, plex or stash")
         # always kept in Omnarr (so a single Omnarr account is enough)…
         playstate.record(STATE, identity.account_id.get(), b["source"], b["item_id"], pos, dur,
                          bool(b.get("finished")), parent_id=_episode_series.get(b["item_id"]),
@@ -1243,7 +1301,7 @@ PASS_HEADERS = ("content-type", "content-length", "content-range", "accept-range
                 "content-disposition")
 
 
-async def _proxy(url, request, headers, prefix="/api/stream/jf"):
+async def _proxy(url, request, headers, prefix="/api/stream/jf", strip_base=""):
     from starlette.background import BackgroundTask
     from fastapi.responses import StreamingResponse
     import httpx as _httpx
@@ -1255,9 +1313,11 @@ async def _proxy(url, request, headers, prefix="/api/stream/jf"):
     out = {k: v for k, v in r.headers.items() if k.lower() in PASS_HEADERS}
     ctype = r.headers.get("content-type", "")
     if "mpegurl" in ctype.lower() or url.split("?")[0].lower().endswith(".m3u8"):
-        body = await r.aread()
+        body = (await r.aread()).decode("utf-8", "replace")
         await r.aclose(); await client.aclose()
-        return Response(play.rewrite_playlist(body.decode("utf-8", "replace"), _base_path(request), prefix), status_code=r.status_code,
+        if strip_base:                                     # Stash writes absolute links to itself
+            body = body.replace(strip_base, "")
+        return Response(play.rewrite_playlist(body, _base_path(request), prefix), status_code=r.status_code,
                         media_type=ctype or "application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
 
     async def close():
@@ -1286,6 +1346,17 @@ async def api_stream_plex(path: str, request: Request):
     q = play._strip_key(str(request.url.query))
     h = {k: v for k, v in plex.headers(s).items() if k != "Accept"}      # media, not JSON
     return await _proxy(f"{plex.base(s)}/{path}" + (f"?{q}" if q else ""), request, h, "/api/stream/plex")
+
+
+@app.get("/api/stream/stash/{path:path}")
+async def api_stream_stash(path: str, request: Request):
+    """Stash scene streams and HLS playlists/segments, for the unlocked Private section only."""
+    s = cfg.source("stash")
+    if not s or not _adult_ok(_session(request)) or not re.match(r"^scene/\d+/stream", path):
+        raise HTTPException(404, "Not found")              # only scene media, never the rest of Stash's API
+    q = play._strip_key(str(request.url.query))
+    return await _proxy(f"{s['url'].rstrip('/')}/{path}" + (f"?{q}" if q else ""), request, {"ApiKey": s["api_key"]},
+                        "/api/stream/stash", strip_base=s["url"].rstrip("/"))
 
 
 @app.get("/api/stream/abs/{item_id}/{ino}")
@@ -1406,7 +1477,8 @@ def api_read_info(unit_key: str, request: Request):
     mine = playstate.get_place(STATE, aid, e["source"], e["source_id"])
     out = {"unit_key": unit_key, "title": e["title"] or e["work_title"], "source": e["source"],
            "progress_sync": True, "app_sync": False}
-    out["offline_allowed"] = accounts.allowed(sess["account"], "can_download") if sess else False
+    # never kept on the device for anything in Private
+    out["offline_allowed"] = bool(sess) and not e["adult"] and accounts.allowed(sess["account"], "can_download")
     if e["source"] in ("calibre", "storyteller"):
         if e["source"] == "calibre":
             fmts = set(json.loads(e["extra"] or "{}").get("formats") or [])

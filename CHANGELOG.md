@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.8 — 2026-10-10
+
+- **Play Stash scenes in Omnarr.** Unlocked Private scenes have a Play button in Omnarr's own player: the file itself when the browser can play it, otherwise Stash's on-the-fly conversion, both through Omnarr. Your place is saved in Omnarr, and for the owner in Stash too (a finished play counts as a play there).
+- **Read adult comics in Omnarr.** Private comics show Read again. Nothing from Private is ever saved for offline reading.
+
 ## 1.0.7 — 2026-10-10
 
 - **Private downloads tidy themselves.** Connect qBittorrent (Settings → Connections, under Private) and each finished download gets its real details in Stash (title, date, studio, performers, tags) and a proper file name, "Studio - 2025-06-09 - Title (Performers).mp4". qBittorrent does the renaming, so it keeps seeding. Details come from StashDB when it recognises the video, else the StashDB scene it was downloaded for, else a StashDB match on studio and title, else the release name.

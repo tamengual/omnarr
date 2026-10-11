@@ -2561,6 +2561,7 @@ function playbackActions(work) {
     if (work.kind === "movie" && edition.source === "jellyfin") return playButton("video", edition.source_id, "Play", work.title);
     if (work.kind === "movie" && edition.source === "plex") return playButton("video", `plex:${edition.source_id}`, "Play", work.title);
     if (work.kind === "book" && edition.source === "abs") return playButton("audio", edition.source_id, "Listen here", work.title);
+    if (edition.source === "stash") return playButton("video", `stash:${edition.source_id}`, work.progress > 0 && work.progress < 0.97 ? "Continue" : "Play", work.title);
     return "";
   }).join("") + readButtons;
 }
@@ -2836,7 +2837,7 @@ async function openWork(id) {
       <article class="detail-view${work.kind === "game" ? " game-detail" : ""}">
         <div class="detail-lead">
           <div class="detail-cover"><span class="cover-placeholder"><span class="placeholder-title">${esc(work.title)}</span><span class="placeholder-author">${esc(work.authors?.[0] || work.kind)}</span></span>${work.cover ? `<img class="cover-image" src="api/cover/${encodeURIComponent(work.cover)}" alt="Cover of ${esc(work.title)}">` : ""}</div>
-          <div class="detail-intro"><div class="eyebrow">${esc(work.kind || "Work")}${work.universe ? ` · ${esc(work.universe)}` : ""}</div><h2>${esc(work.title)}</h2><div class="detail-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join("")}</div>${narrators}<div class="detail-tags">${genres}${tags}</div><div class="detail-playback">${wasPrivate ? "" : playbackActions(work)}</div><p class="live-header hint" data-live-header role="status"></p></div>
+          <div class="detail-intro"><div class="eyebrow">${esc(work.kind || "Work")}${work.universe ? ` · ${esc(work.universe)}` : ""}</div><h2>${esc(work.title)}</h2><div class="detail-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join("")}</div>${narrators}<div class="detail-tags">${genres}${tags}</div><div class="detail-playback">${playbackActions(work)}</div><p class="live-header hint" data-live-header role="status"></p></div>
         </div>
         <div class="detail-content">
           ${!wasPrivate && ["show", "movie", "book"].includes(work.kind) ? '<section class="detail-section live-section" aria-label="Live library details"><p class="live-action-message hint" role="status" aria-live="polite" aria-atomic="true"></p><div data-live-content aria-busy="true">' + liveSkeleton() + '</div></section>' : ""}

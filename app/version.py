@@ -1,2 +1,2 @@
 """Omnarr's version (bump with each release; the offline app shell is cached per version)."""
-VERSION = "1.0.7"
+VERSION = "1.0.8"
