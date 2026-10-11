@@ -961,3 +961,7 @@ span.offline-work { border: 0; color: var(--muted); align-self: center; }
 @media (max-width: 560px) { .find-row { flex-direction: column; align-items: stretch; } .find-scenes li { grid-template-columns: 80px 1fr; } .find-scenes img, .find-noimg { width: 80px; } }
 .find-open { padding: 4px 12px; font-size: 12px; }
 .find-offer { margin-top: 0; margin-bottom: 18px; }
+.find-options { display: flex; gap: 16px; margin-top: 10px; }
+.find-types { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.find-type { border: 1px solid var(--line); background: none; color: var(--muted); padding: 3px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+.find-type[aria-pressed=true] { color: inherit; border-color: var(--scene); background: color-mix(in srgb, var(--scene) 14%, transparent); }

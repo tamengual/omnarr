@@ -27,6 +27,65 @@ import httpx
 
 log = logging.getLogger("omnarr.adultfind")
 STOP = {"the", "and", "a", "an", "of", "with", "in", "on", "to", "for", "his", "her", "my", "&", "vs", "x"}
+
+# Scene types you can type ("group", "dp", "animated"...): the words that pick them out, then the ways
+# uploaders tag them (PornoLab lists them in the title: "[2015, Anal Sex, Bareback, Group Sex]").
+# The first tag is what gets searched for.
+SCENE_TYPES = {
+    "solo": (["solo", "jerk off", "jack off", "jo"], ["solo", "masturbation", "jerk off", "jack off"]),
+    "threesome": (["threesome", "3some", "three way", "threeway"], ["threesome", "3some", "three way", "threeway", "mmm"]),
+    "group": (["group", "orgy", "foursome", "4some"], ["group sex", "orgy", "group", "foursome", "4some"]),
+    "gangbang": (["gangbang", "gang bang", "gang-bang"], ["gang bang", "gangbang", "gang-bang"]),
+    "dp": (["dp", "double penetration", "double anal", "dap"], ["double penetration", "dp", "double anal", "dap"]),
+    "bareback": (["bareback", "raw", "bb", "condomless"], ["bareback", "raw", "condomless"]),
+    "creampie": (["creampie", "breeding", "cum inside"], ["creampie", "breeding", "cum inside", "internal cumshot"]),
+    "oral": (["oral", "blowjob", "bj", "sucking"], ["blowjob", "oral", "cocksucking", "sucking"]),
+    "rimming": (["rimming", "rimjob", "rim"], ["rimming", "rimjob", "ass eating"]),
+    "fisting": (["fisting", "fist"], ["fisting"]),
+    "bdsm": (["bdsm", "bondage", "kink", "leather"], ["bdsm", "bondage", "fetish", "leather", "kink"]),
+    "feet": (["feet", "foot"], ["foot fetish", "feet"]),
+    "interracial": (["interracial", "bbc"], ["interracial", "bbc"]),
+    "twink": (["twink", "twinks"], ["twink", "twinks", "young men"]),
+    "bear": (["bear", "bears"], ["bear", "bears", "hairy"]),
+    "daddy": (["daddy", "dad", "older"], ["daddy", "older/younger", "older younger", "age gap", "mature"]),
+    "muscle": (["muscle", "muscular", "jock", "jocks"], ["muscle", "muscular", "muscles", "jock", "bodybuilder"]),
+    "big dick": (["big dick", "big cock", "huge cock", "hung"], ["big dick", "big cock", "big dicks", "huge cock", "hung"]),
+    "amateur": (["amateur", "homemade"], ["amateur", "homemade"]),
+    "straight": (["straight guy", "gay for pay", "str8", "first time", "bait"], ["straight", "gay for pay", "str8", "first time", "bait"]),
+    "military": (["military", "army", "soldier", "marine"], ["military", "army", "soldier", "uniform"]),
+    "outdoor": (["outdoor", "outdoors", "public"], ["outdoor", "outdoors", "public"]),
+    "massage": (["massage"], ["massage"]),
+    "flip": (["flip", "flip fuck", "versatile"], ["flip fuck", "flip-flop", "flip flop", "versatile"]),
+    "animated": (["animated", "animation", "cartoon", "hentai", "3d", "yaoi", "bara"],
+                 ["animation", "animated", "cartoon", "3d", "cgi", "hentai", "yaoi", "bara"]),
+    "vr": (["vr", "virtual reality"], ["vr", "virtual reality", "180", "360"]),
+    "compilation": (["compilation", "best of"], ["compilation", "best of"]),
+    "full movie": (["full movie", "feature", "dvd", "movie"], ["full length", "feature", "dvd", "movie"]),
+}
+
+
+def extract_types(q):
+    """(scene types named in the words, the other words): "fratx group dp" -> (["group", "dp"], "fratx")."""
+    words, found, i = norm(q).split(), [], 0
+    rest = []
+    phrases = sorted(((w.split(), t) for t, (says, _) in SCENE_TYPES.items() for w in says), key=lambda x: -len(x[0]))
+    while i < len(words):
+        for ph, t in phrases:
+            if words[i:i + len(ph)] == ph:
+                if t not in found:
+                    found.append(t)
+                i += len(ph)
+                break
+        else:
+            rest.append(words[i])
+            i += 1
+    return found, " ".join(rest)
+
+
+def type_hits(title, types):
+    """The requested scene types a release is tagged with."""
+    t = norm(title)
+    return [ty for ty in types if any(re.search(rf"\b{re.escape(norm(tag))}\b", t) for tag in SCENE_TYPES[ty][1])]
 MAX_QUERIES = 5
 
 
@@ -77,7 +136,7 @@ def first_names(performers):
 
 # ── 1. understand the search (StashDB through Stash) ─────────────────────────
 SCRAPE = """query($t:String!,$e:String!){ scrapeSingleScene(source:{stash_box_endpoint:$e}, input:{query:$t}) {
-  title code date details image urls remote_site_id studio { name remote_site_id } performers { name } } }"""
+  title code date details image urls remote_site_id studio { name remote_site_id } performers { name gender } } }"""
 BOXES = "query{ configuration { general { stashBoxes { endpoint name } } } }"
 
 
@@ -94,8 +153,20 @@ def stashbox_endpoint(c):
     return next((b["endpoint"] for b in boxes if "stashdb" in b["endpoint"]), boxes[0]["endpoint"] if boxes else None)
 
 
-def understand(cfg, q, limit=8):
-    """Scenes StashDB thinks the words mean: [{id, title, code, date, studio, performers, image, url}]."""
+MEN = {"MALE", "TRANSGENDER_MALE"}
+
+
+def all_male(performers):
+    """True unless StashDB lists a performer who isn't a man (unknown genders don't count against it)."""
+    genders = [(p.get("gender") or "").upper() for p in performers or []]
+    return not any(g and g not in MEN for g in genders)
+
+
+def understand(cfg, q, limit=8, gay_only=False):
+    """Scenes StashDB thinks the words mean: [{id, title, code, date, studio, performers, image, url}].
+    gay_only: only scenes where every performer StashDB knows is a man. Scene types ("group", "dp")
+    are left out of the lookup; they narrow the release search instead."""
+    q = extract_types(q)[1]
     c = _stash(cfg)
     if not c or not q.strip():
         return []
@@ -105,7 +176,10 @@ def understand(cfg, q, limit=8):
             return []
         r = c.post("/graphql", json={"query": SCRAPE, "variables": {"t": q.strip(), "e": endpoint}})
     out = []
-    for sc in ((r.json().get("data") or {}).get("scrapeSingleScene") or [])[:limit]:
+    scenes = (r.json().get("data") or {}).get("scrapeSingleScene") or []
+    if gay_only:
+        scenes = [sc for sc in scenes if all_male(sc.get("performers"))]
+    for sc in scenes[:limit]:
         image = sc.get("image") or ""
         out.append({"id": sc.get("remote_site_id") or "", "title": sc.get("title") or "", "code": sc.get("code") or "",
                     "date": sc.get("date") or "", "studio": (sc.get("studio") or {}).get("name") or "",
@@ -167,20 +241,37 @@ def _prowlarr(cfg, timeout=120):
     return httpx.Client(base_url=s["url"].rstrip("/") + "/api/v1", timeout=timeout, headers={"X-Api-Key": s["api_key"]})
 
 
+GAY_CATEGORY = re.compile(r"\bgay\b|гей", re.I)
+
+
+def _gay_categories(indexer):
+    """The indexer's own gay sections (PornoLab has ten); empty when it has none."""
+    found = set()
+    def walk(cats):
+        for c in cats or []:
+            if GAY_CATEGORY.search(c.get("name") or ""):
+                found.add(c["id"])
+            walk(c.get("subCategories"))
+    walk((indexer.get("capabilities") or {}).get("categories"))
+    return found
+
+
 def adult_indexers(cfg):
-    """[(id, name)] of enabled indexers tagged xxx (or offering the XXX category when nothing is tagged)."""
+    """[(id, name, gay category ids)] of enabled indexers tagged xxx (or offering the XXX category when
+    nothing is tagged)."""
     with _prowlarr(cfg, timeout=30) as c:
         tags = {t["id"]: t["label"].lower() for t in c.get("/tag").json()}
         idx = [i for i in c.get("/indexer").json() if i.get("enable")]
     tagged = [i for i in idx if any(tags.get(t) == "xxx" for t in i.get("tags") or [])]
     if not tagged:
         tagged = [i for i in idx if any(cat.get("id") == 6000 for cat in (i.get("capabilities") or {}).get("categories") or [])]
-    return [(i["id"], i["name"]) for i in tagged]
+    return [(i["id"], i["name"], _gay_categories(i)) for i in tagged]
 
 
-def _search(cfg, query, ids):
+def _search(cfg, query, ids, categories=()):
     with _prowlarr(cfg) as c:
-        params = [("query", query), ("type", "search"), ("limit", "100")] + [("indexerIds", str(i)) for i in ids]
+        params = [("query", query), ("type", "search"), ("limit", "100")] + [("indexerIds", str(i)) for i in ids] \
+            + [("categories", str(x)) for x in sorted(categories)]
         r = c.get("/search?" + urllib.parse.urlencode(params))
         r.raise_for_status()
         return r.json()
@@ -285,8 +376,8 @@ def studio_hints(cfg, q):
     return {n: a for n, a in found.items() if named_studios(q, {n: a})}
 
 
-def find(cfg, q, scene=None):
-    """{"queries": [...], "indexers": [...], "results": [...], "errors": [...]}."""
+def find(cfg, q, scene=None, gay_only=False):
+    """{"queries": [...], "indexers": [...], "results": [...], "errors": [...], "hidden": n}."""
     ids = adult_indexers(cfg)
     if not ids:
         return {"queries": [], "indexers": [], "results": [], "errors": ["No adult indexers in Prowlarr (tag them xxx)"]}
@@ -295,33 +386,61 @@ def find(cfg, q, scene=None):
             scene = {**scene, "studio_aliases": studio_hints(cfg, scene["studio"]).get(scene["studio"], [])}
         except Exception as e:
             log.info("stashdb studio lookup failed: %s", e)
+    types, q = extract_types(q)                  # "fratx group dp" -> group + dp, and "fratx"
     studios = {scene["studio"]: scene.get("studio_aliases") or []} if scene and scene.get("studio") else {}
-    if not scene:
+    if not scene and q:
         try:
             studios.update(studio_hints(cfg, q))
         except Exception as e:
             log.info("stashdb lookup failed: %s", e)
-    queries = phrasings(q, scene, studios)
-    seen, results, errors = {}, [], []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(queries) or 1) as pool:
-        futures = {pool.submit(_search, cfg, query, [i for i, _ in ids]): query for query in queries}
+    queries = phrasings(q, scene, studios) if (q or scene) else []
+    if types:                                    # also search with the type the way it's tagged
+        tag = SCENE_TYPES[types[0]][1][0]
+        with_type = [f"{b} {tag}" for b in queries[:2]] or [tag] + ([f"gay {tag}"] if gay_only else [])
+        queries = list(dict.fromkeys(with_type + queries))[:MAX_QUERIES + 1]
+    # Gay only: sites with gay sections are searched in just those sections; the rest are kept
+    # only for releases that say "gay" or come from the studio you named / the scene you picked.
+    sectioned = {i: cats for i, _, cats in ids if cats} if gay_only else {}
+    plain = [i for i, _, _ in ids if i not in sectioned]
+    gay_cats = set().union(*sectioned.values()) if sectioned else set()
+    jobs = [(query, list(sectioned), gay_cats) for query in queries if sectioned] + \
+           [(query, plain, set()) for query in queries if plain]
+    seen, results, errors, dropped = {}, [], [], 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(jobs), 8) or 1) as pool:
+        futures = {pool.submit(_search, cfg, query, idx, cats): (query, bool(cats)) for query, idx, cats in jobs}
         for f in concurrent.futures.as_completed(futures):
+            query, in_sections = futures[f]
             try:
                 found = f.result()
             except Exception as e:
-                errors.append(f"{futures[f]}: {type(e).__name__}")
+                errors.append(f"{query}: {type(e).__name__}")
                 continue
             for rel in found:
                 key = rel.get("infoHash") or rel.get("guid")
                 if key in seen:
-                    seen[key]["found_by"].add(futures[f])
+                    seen[key]["found_by"].add(query)
                     continue
                 pts, why, on_target = score(rel.get("title", ""), q, scene, studios)
+                if types:                        # every type you asked for has to be in its tags
+                    hits = type_hits(rel.get("title", ""), types)
+                    pts += 3 * len(hits)
+                    why += hits
+                    on_target = on_target and len(hits) == len(types)
+                if gay_only:
+                    cats = {c.get("id") for c in rel.get("categories") or []}
+                    if in_sections:
+                        ok = bool(cats & gay_cats)
+                    else:
+                        adult = not cats or any(6000 <= (c or 0) < 7000 for c in cats)   # not a kids' film called "Gay Purr-ee"
+                        ok = adult and (bool(GAY_CATEGORY.search(rel.get("title", ""))) or (on_target and bool(studios)))
+                    if not ok:
+                        dropped += 1
+                        continue
                 item = {"guid": rel.get("guid"), "indexer_id": rel.get("indexerId"), "indexer": rel.get("indexer"),
                         "title": rel.get("title", ""), "size": rel.get("size") or 0, "seeders": rel.get("seeders"),
                         "published": (rel.get("publishDate") or "")[:10], "info_url": rel.get("infoUrl") or "",
                         "protocol": rel.get("protocol"), "score": pts, "why": why, "on_target": on_target,
-                        "found_by": {futures[f]}}
+                        "found_by": {query}}
                 seen[key] = item
                 results.append(item)
     best = max((r["score"] for r in results if r["on_target"]), default=0)
@@ -330,7 +449,28 @@ def find(cfg, q, scene=None):
         r["match"] = bool(r.pop("on_target")) and r["score"] >= floor and r["score"] > 0
         r["found_by"] = sorted(r["found_by"])
     results.sort(key=lambda r: (-r["match"], -r["score"], -(r["seeders"] or 0)))
-    return {"queries": queries, "indexers": [n for _, n in ids], "results": results[:80], "errors": errors}
+    return {"queries": queries, "indexers": [n for _, n, _ in ids], "results": results[:80], "errors": errors,
+            "hidden": dropped, "gay_only": gay_only, "types": types}
+
+
+# ── your choices (Gay only), kept for the searches Follow runs on its own too ──
+def prefs(state_path):
+    con = sqlite3.connect(state_path, timeout=15)
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS adult_prefs (k TEXT PRIMARY KEY, v TEXT)")
+        got = dict(con.execute("SELECT k, v FROM adult_prefs").fetchall())
+    finally:
+        con.close()
+    return {"gay_only": got.get("gay_only") == "1"}
+
+
+def set_prefs(state_path, gay_only):
+    con = sqlite3.connect(state_path, timeout=15)
+    with con:
+        con.execute("CREATE TABLE IF NOT EXISTS adult_prefs (k TEXT PRIMARY KEY, v TEXT)")
+        con.execute("INSERT OR REPLACE INTO adult_prefs VALUES ('gay_only', ?)", ("1" if gay_only else "0",))
+    con.close()
+    return prefs(state_path)
 
 
 # ── download, then let Stash identify it ─────────────────────────────────────
@@ -565,7 +705,7 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
                     con.execute("UPDATE adult_wanted SET status='have' WHERE scene_id=?", (r["scene_id"],))
                 continue
             searched += 1
-            pick = best_release(find(cfg, "", scene))
+            pick = best_release(find(cfg, "", scene, gay_only=prefs(state_path)["gay_only"]))
             if pick:
                 grab(cfg, state_path, None, pick["guid"], pick["indexer_id"], pick["title"])
                 grabbed += 1

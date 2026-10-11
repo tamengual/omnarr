@@ -37,6 +37,20 @@ def test_studio_spelled_any_way():
     assert hit[2] and hit[0] >= 6
 
 
+def test_scene_types_in_the_words():
+    assert af.extract_types("fratx group dp") == (["group", "dp"], "fratx")
+    assert af.extract_types("Sean Cody gang bang") == (["gangbang"], "sean cody")
+    assert af.extract_types("animated twinks") == (["animated", "twink"], "")
+    assert af.type_hits("[FraternityX.com] FX104 Katy [2014, Amateur, Gang Bang, Group Sex]", ["gangbang", "group", "dp"]) == ["gangbang", "group"]
+    assert af.type_hits("Yaoi Collection 3D", ["animated"]) == ["animated"]
+
+
+def test_gay_only_filters():
+    assert af.all_male([{"gender": "MALE"}, {"gender": None}]) and not af.all_male([{"gender": "FEMALE"}, {"gender": "MALE"}])
+    assert af._gay_categories({"capabilities": {"categories": [{"id": 6000, "name": "XXX", "subCategories": [
+        {"id": 101777, "name": "Гей-ролики / Gay Clips (HD Video)"}, {"id": 101788, "name": "Straight clips"}]}]}}) == {101777}
+
+
 def test_short_codes_need_the_studio():
     scene = {"studio": "FratX", "studio_aliases": ["FraternityX"], "code": "485", "title": "Bred Booty", "performers": []}
     assert not af.score("2026-07-16 Venere Moras - Summer Knits (485 pics)", "", scene)[2]
@@ -77,7 +91,7 @@ class World:
                 q = parse_qs(urlparse(str(req.url)).query)
                 self.searches.append((q["query"][0], q.get("indexerIds")))
                 hits = [{"guid": "g-good", "indexerId": 7, "indexer": "PornoLab", "title": GOOD, "size": 9.4e8, "seeders": 2}] \
-                    if "SeanCody" in q["query"][0] or "Dustin Ryder" == q["query"][0] else []
+                    if "seancody" in q["query"][0].lower() or q["query"][0].lower() == "dustin ryder" else []
                 return httpx.Response(200, json=hits + [{"guid": "g-junk", "indexerId": 7, "indexer": "PornoLab", "title": JUNK,
                                                          "size": 3e9, "seeders": 9}])
             if path.endswith("/search") and req.method == "POST":
@@ -155,6 +169,18 @@ def test_find_understands_and_ranks(env):
     assert all(ids == ["7"] for _, ids in world.searches)          # only the adult indexers
     assert admin.post("/api/private/find/grab", json={"guid": "g-good", "indexer_id": 7, "title": GOOD}).json()["stash_scan"]
     assert world.grabs == [{"guid": "g-good", "indexerId": 7}]
+
+
+def test_gay_only_and_types_through_the_api(env):
+    main, admin, world = env
+    assert admin.post("/api/private/find/prefs", json={"gay_only": True}).json() == {"gay_only": True}
+    r = admin.post("/api/private/find", json={"q": "SeanCody Dustin bareback"}).json()
+    assert r["gay_only"] and r["types"] == ["bareback"]
+    titles = [x["title"] for x in r["results"]]
+    assert GOOD in titles and JUNK not in titles and r["hidden"] >= 1   # the straight release is hidden
+    good = next(x for x in r["results"] if x["title"] == GOOD)
+    assert good["match"] and "bareback" in good["why"]
+    assert any(q.endswith("bareback") for q in r["queries"])
 
 
 def test_grab_without_a_download_client_says_what_to_do(env):

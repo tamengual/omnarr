@@ -3461,10 +3461,40 @@ function findTab(name) {
   if (name === "follow") loadFollows();
 }
 $$("[data-find-tab]", findDialog).forEach((tab) => tab.addEventListener("click", () => findTab(tab.dataset.findTab)));
-function openFind(query = "") {
+const FIND_TYPES = ["solo", "threesome", "group", "gangbang", "DP", "bareback", "creampie", "oral", "rimming", "fisting", "BDSM", "feet", "interracial", "twink", "bear", "daddy", "muscle", "big dick", "amateur", "straight", "military", "outdoor", "massage", "flip", "animated", "VR", "compilation", "full movie"];
+$("#find-types").innerHTML = FIND_TYPES.map((t) => `<button type="button" class="find-type" data-type="${esc(t)}" aria-pressed="false">${esc(t)}</button>`).join("");
+function syncTypeChips() {
+  const q = ` ${$("#find-q").value.toLowerCase()} `;
+  $$("[data-type]", findDialog).forEach((b) => b.setAttribute("aria-pressed", String(q.includes(` ${b.dataset.type.toLowerCase()} `))));
+}
+$("#find-types").addEventListener("click", (event) => {
+  const b = event.target.closest("[data-type]");
+  if (!b) return;
+  const input = $("#find-q"), word = b.dataset.type.toLowerCase();
+  const words = input.value.trim().split(/\s+/).filter(Boolean);
+  const joined = ` ${input.value.trim().toLowerCase()} `;
+  input.value = joined.includes(` ${word} `) ? joined.replace(` ${word} `, " ").trim() : [...words, word].join(" ");
+  syncTypeChips();
+  input.focus();
+});
+$("#find-q").addEventListener("input", syncTypeChips);
+let findPrefsLoaded = false;
+async function loadFindPrefs() {
+  if (findPrefsLoaded) return;
+  try { $("#find-gay").checked = (await api("api/private/find/prefs")).gay_only; findPrefsLoaded = true; } catch { /* default off */ }
+}
+$("#find-gay").addEventListener("change", async () => {
+  try { await api("api/private/find/prefs", { method: "POST", body: JSON.stringify({ gay_only: $("#find-gay").checked }) }); } catch { /* still used for this search */ }
+  const q = $("#find-q").value.trim();
+  if (q) $("#find-form").requestSubmit();
+});
+
+async function openFind(query = "") {
   findTab("find");
+  await loadFindPrefs();
   if (!findDialog.open) findDialog.showModal();
   $("#find-q").value = query;
+  syncTypeChips();
   if (query) $("#find-form").requestSubmit(); else $("#find-q").focus();
 }
 $("#find-open").addEventListener("click", () => openFind((params.get("q") || "").trim()));
@@ -3484,10 +3514,10 @@ async function runFind(q, scene = null) {
   $("#find-status").textContent = scene ? `Searching for “${scene.title}”…` : "Searching your adult indexers…";
   $("#find-results").innerHTML = "";
   try {
-    const data = await api("api/private/find", { method: "POST", body: JSON.stringify({ q, scene }) });
+    const data = await api("api/private/find", { method: "POST", body: JSON.stringify({ q, scene, gay_only: $("#find-gay").checked }) });
     if (seq !== findSeq) return;
     const best = data.results.filter((r) => r.match), other = data.results.filter((r) => !r.match);
-    $("#find-status").textContent = `Searched ${data.indexers.length} indexer${data.indexers.length === 1 ? "" : "s"} for: ${data.queries.join(" · ")}${data.errors.length ? ` (some searches failed)` : ""}`;
+    $("#find-status").textContent = `Searched ${data.indexers.length} indexer${data.indexers.length === 1 ? "" : "s"} for: ${data.queries.join(" · ")}${data.types?.length ? ` · scene type: ${data.types.join(", ")}` : ""}${data.hidden ? ` · ${data.hidden} not-gay result${data.hidden === 1 ? "" : "s"} hidden` : ""}${data.errors.length ? " (some searches failed)" : ""}`;
     $("#find-results").innerHTML = (best.length ? `<h3>Best matches</h3><ul class="find-list">${best.map(releaseRow).join("")}</ul>` : "<p class=\"hint\">No clear matches. Try other names, or pick a scene above.</p>")
       + (other.length ? `<details class="activity-overflow"><summary>Other results (${other.length})</summary><ul class="find-list">${other.map(releaseRow).join("")}</ul></details>` : "");
   } catch (error) {
@@ -3503,6 +3533,7 @@ $("#find-form").addEventListener("submit", async (event) => {
   runFind(q);
   try {
     const { scenes } = await api(`api/private/find/understand?q=${encodeURIComponent(q)}`);
+    if (!scenes.length) $("#find-scenes").innerHTML = "";
     if (!scenes.length || $("#find-q").value.trim() !== q) return;
     $("#find-scenes").innerHTML = `<h3>Did you mean one of these scenes?</h3><ul class="find-scenes">${scenes.map((s, i) => `<li>
       ${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy">` : '<span class="find-noimg"></span>'}

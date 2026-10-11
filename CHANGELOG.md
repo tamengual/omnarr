@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.6 — 2026-10-10
+
+- **Gay only** switch in Find (remembered, and used by Follow too). Sites with gay sections (PornoLab has ten) are searched only in those; other sites keep only adult releases that say gay or come from the studio or scene you asked for. StashDB suggestions are limited to all-male scenes.
+- **Search by scene type.** Type or tap types like solo, group, gangbang, DP, bareback, twink, daddy or animated. Omnarr searches with the words uploaders tag them with (DP = double penetration; animated = animation, cartoon, 3D, yaoi) and only counts a release as a match when its tags include every type you asked for.
+
 ## 1.0.5 — 2026-10-10
 
 - **Private search offers new scenes.** Searching in Private now shows "Find new scenes for …" right under the heading, which opens Find with your words already searched. The banner button is easier to spot too.

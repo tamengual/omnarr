@@ -2009,7 +2009,7 @@ def _private_admin(request):
 def api_find_understand(q: str, request: Request):
     _private_admin(request)
     try:
-        return {"scenes": adultfind.understand(cfg, q)}
+        return {"scenes": adultfind.understand(cfg, q, gay_only=adultfind.prefs(STATE)["gay_only"])}
     except Exception as e:
         raise HTTPException(502, f"StashDB lookup failed: {type(e).__name__}")
 
@@ -2022,7 +2022,8 @@ async def api_find(request: Request):
     if not q and not scene:
         raise HTTPException(400, "Type something to look for")
     try:
-        return await asyncio.to_thread(adultfind.find, cfg, q, scene)
+        gay = bool(body["gay_only"]) if "gay_only" in body else adultfind.prefs(STATE)["gay_only"]
+        return await asyncio.to_thread(adultfind.find, cfg, q, scene, gay)
     except adultfind.httpx.HTTPError as e:
         raise HTTPException(502, f"Prowlarr: {type(e).__name__}")
 
@@ -2038,6 +2039,18 @@ async def api_find_grab(request: Request):
         raise HTTPException(400, str(e))
     live._audit(STATE, "adult_grab", {"by": sess["account"]["username"]}, str(b.get("title") or "")[:200])
     return {"ok": True, "stash_scan": bool((cfg.source("stash") or {}).get("downloads_path"))}
+
+
+@app.get("/api/private/find/prefs")
+def api_find_prefs(request: Request):
+    _private_admin(request)
+    return adultfind.prefs(STATE)
+
+
+@app.post("/api/private/find/prefs")
+async def api_find_prefs_save(request: Request):
+    _private_admin(request)
+    return adultfind.set_prefs(STATE, bool((await request.json()).get("gay_only")))
 
 
 @app.get("/api/private/follows")

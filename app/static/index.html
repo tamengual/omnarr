@@ -298,7 +298,9 @@
       <div class="find-tabs" role="tablist"><button type="button" role="tab" data-find-tab="find" aria-selected="true">Find</button><button type="button" role="tab" data-find-tab="follow" aria-selected="false">Following</button></div>
       <section data-find-panel="find">
         <form id="find-form" class="find-form"><input id="find-q" type="search" placeholder="Studio, performers, scene…" autocomplete="off" aria-label="What to look for"><button class="primary-button" type="submit">Search</button></form>
-        <p class="hint">Type it however you like. Omnarr looks it up on StashDB, then searches your adult indexers with the names uploaders actually use.</p>
+        <div class="find-options"><label class="check"><input id="find-gay" type="checkbox"><span>Gay only</span></label></div>
+        <div class="find-types" id="find-types" aria-label="Scene types"></div>
+        <p class="hint">Type it however you like, e.g. “fratx group” or “sean cody dp”. Omnarr looks it up on StashDB, then searches your adult indexers with the names uploaders actually use. Tap a type to add it.</p>
         <div id="find-scenes"></div>
         <p id="find-status" class="hint" role="status" aria-live="polite"></p>
         <div id="find-results"></div>
