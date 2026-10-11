@@ -477,7 +477,19 @@ def set_prefs(state_path, gay_only):
 GRABS = "CREATE TABLE IF NOT EXISTS adult_grabs (guid TEXT PRIMARY KEY, title TEXT, account_id INTEGER, at REAL)"
 
 
-def grab(cfg, state_path, account_id, guid, indexer_id, title=""):
+def grabs_con(state_path):
+    """adult_grabs, plus what each download is (scene: the StashDB scene when known) and its tidy-up state."""
+    con = sqlite3.connect(state_path, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute(GRABS)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(adult_grabs)")}
+    for col, kind in (("scene", "TEXT"), ("hash", "TEXT"), ("tidied", "REAL"), ("tidy_note", "TEXT")):
+        if col not in cols:
+            con.execute(f"ALTER TABLE adult_grabs ADD COLUMN {col} {kind}")
+    return con
+
+
+def grab(cfg, state_path, account_id, guid, indexer_id, title="", scene=None):
     with _prowlarr(cfg, timeout=60) as c:
         if not c.get("/downloadclient").json():
             raise RuntimeError("Prowlarr has no download client yet. Add qBittorrent in Prowlarr → Settings → "
@@ -489,10 +501,10 @@ def grab(cfg, state_path, account_id, guid, indexer_id, title=""):
         except Exception:
             msg = r.text[:200]
         raise RuntimeError(f"Prowlarr couldn't send it to the download client: {msg or r.status_code}")
-    con = sqlite3.connect(state_path, timeout=15)
+    con = grabs_con(state_path)
     with con:
-        con.execute(GRABS)
-        con.execute("INSERT OR REPLACE INTO adult_grabs VALUES (?,?,?,?)", (guid, title[:300], account_id, time.time()))
+        con.execute("INSERT OR REPLACE INTO adult_grabs (guid, title, account_id, at, scene) VALUES (?,?,?,?,?)",
+                    (guid, title[:300], account_id, time.time(), json.dumps(scene) if scene else None))
     con.close()
     return True
 
@@ -707,7 +719,7 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
             searched += 1
             pick = best_release(find(cfg, "", scene, gay_only=prefs(state_path)["gay_only"]))
             if pick:
-                grab(cfg, state_path, None, pick["guid"], pick["indexer_id"], pick["title"])
+                grab(cfg, state_path, None, pick["guid"], pick["indexer_id"], pick["title"], scene)
                 grabbed += 1
                 audit("adult_follow_grab", {"scene": scene.get("title"), "studio": scene.get("studio")}, pick["title"][:200])
             with con:

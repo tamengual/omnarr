@@ -29,7 +29,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import adultfind, devices, extend, provision, tailnet, watching  # noqa: E402
+from . import adultfind, adulttidy, devices, extend, provision, tailnet, watching  # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -2034,7 +2034,8 @@ async def api_find_grab(request: Request):
     b = await request.json()
     try:
         await asyncio.to_thread(adultfind.grab, cfg, STATE, sess["account"]["id"], str(b.get("guid") or ""),
-                                int(b.get("indexer_id") or 0), str(b.get("title") or ""))
+                                int(b.get("indexer_id") or 0), str(b.get("title") or ""),
+                                b.get("scene") if isinstance(b.get("scene"), dict) else None)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     live._audit(STATE, "adult_grab", {"by": sess["account"]["username"]}, str(b.get("title") or "")[:200])
@@ -2406,6 +2407,7 @@ def _adult_loop():
     time.sleep(300)
     last_follow = 0.0
     while True:
+        busy = False
         try:
             if _adult_enabled() and cfg.source("stash") and cfg.source("prowlarr"):
                 if time.time() - last_follow > 6 * 3600:
@@ -2413,11 +2415,19 @@ def _adult_loop():
                     res = adultfind.check_follows(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))
                     if res.get("new") or res.get("grabbed"):
                         log.info("followed scenes: %s", res)
-                if adultfind.pending(STATE):
+                busy = adultfind.pending(STATE)
+                if busy:
                     adultfind.scan_and_identify(cfg)
+                    time.sleep(90)                           # Stash scans in the background
+                    if cfg.source("qbittorrent"):
+                        tidied = adulttidy.tidy(cfg, STATE, _reindex)
+                        if tidied:
+                            log.info("tidied downloads: %s", tidied)
+                    else:
+                        _reindex()                           # new scenes show up now, not at the next 15-minute refresh
         except Exception as e:
             log.error("adult follow loop failed: %s", e, exc_info=True)
-        time.sleep(15 * 60)
+        time.sleep(5 * 60 if busy else 15 * 60)
 
 
 def _startup():

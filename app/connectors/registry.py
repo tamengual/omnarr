@@ -83,6 +83,21 @@ def _test_custom_requests(s):
     return extend.test_webhook(s)
 
 
+def _test_qbittorrent(s):
+    with httpx.Client(base_url=s["url"].rstrip("/"), timeout=15) as c:
+        if s.get("username") or s.get("password"):
+            r = c.post("/api/v2/auth/login", data={"username": s.get("username") or "", "password": s.get("password") or ""},
+                       headers={"Referer": s["url"]})
+            if r.status_code != 200 or r.text.strip() != "Ok.":
+                return False, "qBittorrent didn't accept that login"
+        v = c.get("/api/v2/app/version")
+        if v.status_code == 403:
+            return False, "qBittorrent wants a login: add its username and password"
+        v.raise_for_status()
+        n = len(c.get("/api/v2/torrents/info", params={"category": s.get("category") or "stash"}).json())
+    return True, f"Connected to qBittorrent {v.text.strip()}: {n} Private download{'' if n == 1 else 's'}"
+
+
 def _test_abs(s):
     if s.get("api_key"):
         h = {"Authorization": f"Bearer {s['api_key']}"}
@@ -253,6 +268,14 @@ APPS = [
      "about": "Adult scenes, shown only in the PIN-locked private section.", "fields": [URL("Stash", "http://host:9999"), KEY("Stash → Settings → Security → API key."), BROWSER,
                 {"key": "downloads_path", "label": "Downloads folder, as Stash sees it (optional)", "type": "path", "required": False,
                  "placeholder": "/downloads", "help": "Where scenes you download from Private land. Omnarr has Stash scan it and identify new files on StashDB."}]},
+    {"key": "qbittorrent", "label": "qBittorrent (tidy Private downloads)", "category": "Private", "test": _test_qbittorrent,
+     "about": "Lets Omnarr rename finished Private downloads (Studio - date - Title (Performers)) without breaking seeding.",
+     "fields": [URL("qBittorrent", "http://host:8080"),
+                {"key": "username", "label": "Username", "type": "text", "required": False, "placeholder": "admin"},
+                {"key": "password", "label": "Password", "type": "secret", "required": False,
+                 "help": "Leave both empty if qBittorrent lets this address in without a login."},
+                {"key": "category", "label": "Category of Private downloads", "type": "text", "required": False, "placeholder": "stash",
+                 "help": "The category Prowlarr gives them (Prowlarr → Settings → Download Clients)."}]},
     # ── other ──
     {"key": "email", "label": "Email (for invitations)", "category": "Other", "test": _test_email,
      "about": "Lets Omnarr email sign-up invitations. Any SMTP server works; for Gmail use smtp.gmail.com, port 587 and an app password.",

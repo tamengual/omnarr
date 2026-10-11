@@ -3509,8 +3509,10 @@ function releaseRow(r) {
 }
 
 let findSeq = 0;
+let findScene = null;                     // the StashDB scene being searched for, so a download knows what it is
 async function runFind(q, scene = null) {
   const seq = ++findSeq;
+  findScene = scene;
   $("#find-status").textContent = scene ? `Searching for “${scene.title}”…` : "Searching your adult indexers…";
   $("#find-results").innerHTML = "";
   try {
@@ -3555,7 +3557,7 @@ $("#find-results").addEventListener("click", async (event) => {
   b.disabled = true;
   b.textContent = "Sending…";
   try {
-    const r = await api("api/private/find/grab", { method: "POST", body: JSON.stringify({ guid: b.dataset.grab, indexer_id: b.dataset.indexer, title: b.dataset.title }) });
+    const r = await api("api/private/find/grab", { method: "POST", body: JSON.stringify({ guid: b.dataset.grab, indexer_id: b.dataset.indexer, title: b.dataset.title, scene: findScene }) });
     b.textContent = r.stash_scan ? "Downloading · Stash will pick it up" : "Downloading";
   } catch (error) {
     b.disabled = false;

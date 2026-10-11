@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.7 — 2026-10-10
+
+- **Private downloads tidy themselves.** Connect qBittorrent (Settings → Connections, under Private) and each finished download gets its real details in Stash (title, date, studio, performers, tags) and a proper file name, "Studio - 2025-06-09 - Title (Performers).mp4". qBittorrent does the renaming, so it keeps seeding. Details come from StashDB when it recognises the video, else the StashDB scene it was downloaded for, else a StashDB match on studio and title, else the release name.
+- New downloads show up in Omnarr within a few minutes instead of at the next 15-minute refresh.
+
 ## 1.0.6 — 2026-10-10
 
 - **Gay only** switch in Find (remembered, and used by Follow too). Sites with gay sections (PornoLab has ten) are searched only in those; other sites keep only adult releases that say gay or come from the studio or scene you asked for. StashDB suggestions are limited to all-male scenes.
