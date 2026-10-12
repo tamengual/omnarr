@@ -2487,6 +2487,11 @@ def _wanted_loop():
     last_harder = 0.0
     while True:
         _wanted_tick()                  # cheap when nothing is due: a few DB reads
+        try:
+            from . import auto4k
+            auto4k.run(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))     # big visual movies -> 4K
+        except Exception as e:
+            log.error("auto 4K failed: %s", e, exc_info=True)
         if time.time() - last_harder > 24 * 3600:     # search harder: once a day, ≤8 titles, each ≤ weekly
             last_harder = time.time()
             try:

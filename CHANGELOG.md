@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.12 — 2026-10-11
+
+- **Big visual movies in 4K.** Name a Radarr quality profile in the Radarr connection ("4K quality profile for big visual movies") and newly added sci-fi, fantasy, animated and adventure blockbusters from 2008 on move to it and get searched in 4K. Everything else keeps its profile. Only movies added after you turn it on are touched, each once, so moving one back by hand sticks.
+
 ## 1.0.11 — 2026-10-11
 
 - The 1.0.10 changes, released properly (1.0.10's build stopped on an out-of-date test and was never published).
