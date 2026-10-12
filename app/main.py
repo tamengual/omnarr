@@ -2154,6 +2154,27 @@ async def api_follow_add(request: Request):
     return {"ok": True, "follows": adultfind.follows(STATE)}
 
 
+@app.post("/api/private/wanted")
+async def api_want(request: Request):
+    """Get a scene picked in Find: download the best clear match now, or keep looking for it."""
+    sess = _private_admin(request)
+    scene = (await request.json()).get("scene")
+    try:
+        adultfind.want(STATE, scene if isinstance(scene, dict) else None, sess["account"]["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    threading.Thread(target=adultfind.work_wanted, args=(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r)),
+                     kwargs={"only": {scene["id"]}}, daemon=True).start()
+    return {"ok": True, "wanted": adultfind.wanted_list(STATE)}
+
+
+@app.delete("/api/private/wanted/{scene_id}")
+def api_unwant(scene_id: str, request: Request):
+    _private_admin(request)
+    adultfind.unwant(STATE, scene_id)
+    return {"ok": True, "wanted": adultfind.wanted_list(STATE)}
+
+
 @app.delete("/api/private/follows/{kind}/{fid}")
 def api_follow_remove(kind: str, fid: str, request: Request):
     _private_admin(request)

@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 import urllib.parse
 
@@ -636,7 +637,8 @@ def wanted_list(state_path, limit=60):
             sc = json.loads(r["scene"])
             out.append({"scene_id": r["scene_id"], "title": sc.get("title"), "studio": sc.get("studio"),
                         "performers": sc.get("performers"), "date": sc.get("date"), "status": r["status"],
-                        "tries": r["tries"], "release": r["release"] or ""})
+                        "tries": r["tries"], "release": r["release"] or "",
+                        "via": "get" if (r["follow"] or "").startswith("get:") else "follow"})
         return out
     finally:
         con.close()
@@ -676,12 +678,11 @@ def best_release(found):
 def check_follows(cfg, state_path, audit=lambda *a: None):
     """Add new scenes from followed studios/performers, then try to download the ones that are due."""
     fl = follows(state_path)
-    if not fl or not cfg.source("prowlarr"):
+    if not cfg.source("prowlarr"):
         return {"new": 0, "grabbed": 0}
     c = _stashdb(cfg)
     if not c:
         return {"new": 0, "grabbed": 0, "error": "Stash has no StashDB key"}
-    endpoint = str(c.base_url).rstrip("/")
     now, new = time.time(), 0
     con = _fcon(state_path)
     with c:
@@ -697,8 +698,54 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
                     cur = con.execute("INSERT OR IGNORE INTO adult_wanted (scene_id, scene, follow, status, added) VALUES (?,?,?,?,?)",
                                       (s["id"], json.dumps(s), f"{f['kind']}:{f['id']}", "waiting", now))
                     new += cur.rowcount
+    con.close()
+    return {"new": new, **work_wanted(cfg, state_path, audit)}
+
+
+def want(state_path, scene, account_id=None):
+    """Get one scene picked in Find: it joins the same list Follow uses, looked for right away."""
+    if not scene or not scene.get("id"):
+        raise ValueError("Pick a scene first")
+    keep = {k: scene.get(k) for k in ("id", "title", "code", "date", "studio", "studio_aliases", "performers", "url")}
+    con = _fcon(state_path)
+    with con:
+        cur = con.execute("INSERT OR IGNORE INTO adult_wanted (scene_id, scene, follow, status, added) VALUES (?,?,?,?,?)",
+                          (scene["id"], json.dumps(keep), f"get:{account_id or ''}", "waiting", time.time()))
+        if not cur.rowcount:                      # asked again: look again now, unless it's on its way or here
+            con.execute("""UPDATE adult_wanted SET status='waiting', last_try=0
+                           WHERE scene_id=? AND status IN ('waiting', 'not_found')""", (scene["id"],))
+    con.close()
+
+
+def unwant(state_path, scene_id):
+    con = _fcon(state_path)
+    with con:
+        con.execute("DELETE FROM adult_wanted WHERE scene_id=? AND status IN ('waiting', 'not_found')", (scene_id,))
+    con.close()
+
+
+def work_wanted(cfg, state_path, audit=lambda *a: None, only=None):
+    """Look for every wanted scene that's due (followed or Get), downloading clear matches only.
+    A scene is looked for every 6 hours (daily after 4 tries) until 45 days after it came out,
+    and always for at least 14 days after it was asked for (Get can pick old scenes)."""
+    with _work_lock:                              # Get and the background check never grab the same scene twice
+        return _work_wanted(cfg, state_path, audit, only)
+
+
+_work_lock = threading.Lock()
+
+
+def _work_wanted(cfg, state_path, audit, only):
+    c = _stashdb(cfg)
+    if not c:
+        return {"grabbed": 0, "searched": 0}
+    endpoint = str(c.base_url).rstrip("/")
+    c.close()
+    now = time.time()
+    con = _fcon(state_path)
     grabbed = searched = 0
-    due = [r for r in con.execute("SELECT * FROM adult_wanted WHERE status='waiting' ORDER BY added")]
+    due = [r for r in con.execute("SELECT * FROM adult_wanted WHERE status='waiting' ORDER BY added")
+           if only is None or r["scene_id"] in only]
     for r in due:
         if searched >= MAX_SEARCHES_PER_RUN or grabbed >= MAX_GRABS_PER_RUN:
             break
@@ -707,7 +754,8 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
         if now - r["last_try"] < wait:
             continue
         released = time.mktime(time.strptime(scene["date"], "%Y-%m-%d")) if scene.get("date") else r["added"]
-        if now - released > GIVE_UP_DAYS * 86400 and tries > 0:
+        deadline = max(released + GIVE_UP_DAYS * 86400, (r["added"] or now) + 14 * 86400)
+        if now > deadline and tries > 0:
             with con:
                 con.execute("UPDATE adult_wanted SET status='not_found' WHERE scene_id=?", (r["scene_id"],))
             continue
@@ -719,7 +767,9 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
             searched += 1
             pick = best_release(find(cfg, "", scene, gay_only=prefs(state_path)["gay_only"]))
             if pick:
-                grab(cfg, state_path, None, pick["guid"], pick["indexer_id"], pick["title"], scene)
+                who = (r["follow"] or "").split(":", 1)
+                grab(cfg, state_path, int(who[1]) if who[0] == "get" and who[1].isdigit() else None,
+                     pick["guid"], pick["indexer_id"], pick["title"], scene)
                 grabbed += 1
                 audit("adult_follow_grab", {"scene": scene.get("title"), "studio": scene.get("studio")}, pick["title"][:200])
             with con:
@@ -730,4 +780,4 @@ def check_follows(cfg, state_path, audit=lambda *a: None):
             with con:
                 con.execute("UPDATE adult_wanted SET tries=tries+1, last_try=? WHERE scene_id=?", (now, r["scene_id"]))
     con.close()
-    return {"new": new, "grabbed": grabbed, "searched": searched}
+    return {"grabbed": grabbed, "searched": searched}

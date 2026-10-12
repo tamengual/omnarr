@@ -183,6 +183,26 @@ def test_gay_only_and_types_through_the_api(env):
     assert any(q.endswith("bareback") for q in r["queries"])
 
 
+def test_get_several_scenes_from_find(env):
+    main, admin, world = env
+    st = str(main.STATE)
+    old = {**SCENE, "date": "2013-12-22"}                          # an old scene still gets looked for
+    r = admin.post("/api/private/wanted", json={"scene": old})
+    assert r.status_code == 200
+    other = {**SCENE, "id": "s9999", "title": "Nobody Uploaded This", "code": "", "performers": ["Zed"]}
+    admin.post("/api/private/wanted", json={"scene": other})
+    res = af.work_wanted(main.cfg, st)                            # what the background thread runs
+    status = {w["title"]: (w["status"], w["via"]) for w in af.wanted_list(st)}
+    assert status["Dustin & Ryder: Bareback"][0] == "downloading" or len(world.grabs) == 1
+    assert status["Nobody Uploaded This"] == ("waiting", "get")    # keeps looking, no wrong grab
+    assert sum(1 for g in world.grabs if g["guid"] == "g-good") == 1
+    af.work_wanted(main.cfg, st)
+    assert sum(1 for g in world.grabs if g["guid"] == "g-good") == 1   # never twice
+    admin.delete("/api/private/wanted/s9999")
+    assert "Nobody Uploaded This" not in {w["title"] for w in af.wanted_list(st)}
+    assert admin.post("/api/private/wanted", json={"scene": {"title": "no id"}}).status_code == 400
+
+
 def test_grab_without_a_download_client_says_what_to_do(env):
     main, admin, world = env
     world.clients = []

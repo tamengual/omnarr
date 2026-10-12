@@ -3541,8 +3541,16 @@ $("#find-form").addEventListener("submit", async (event) => {
     $("#find-scenes").innerHTML = `<h3>Did you mean one of these scenes?</h3><ul class="find-scenes">${scenes.map((s, i) => `<li>
       ${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy">` : '<span class="find-noimg"></span>'}
       <div><strong>${esc(s.title)}</strong><span>${esc([s.studio, s.date, s.performers.join(", ")].filter(Boolean).join(" · "))}</span>
-      <div class="find-actions"><button type="button" class="secondary-button" data-scene="${i}">Find this scene</button>${s.studio_id ? `<button type="button" class="text-button" data-follow-studio="${i}">Follow ${esc(s.studio)}</button>` : ""}</div></div></li>`).join("")}</ul>`;
+      <div class="find-actions"><button type="button" class="primary-button" data-get-scene="${i}">Get</button><button type="button" class="secondary-button" data-scene="${i}">Find this scene</button>${s.studio_id ? `<button type="button" class="text-button" data-follow-studio="${i}">Follow ${esc(s.studio)}</button>` : ""}</div></div></li>`).join("")}</ul>`;
     $$("[data-scene]", $("#find-scenes")).forEach((b) => b.addEventListener("click", () => runFind(q, scenes[Number(b.dataset.scene)])));
+    $$("[data-get-scene]", $("#find-scenes")).forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      b.textContent = "Getting…";
+      try {
+        await api("api/private/wanted", { method: "POST", body: JSON.stringify({ scene: scenes[Number(b.dataset.getScene)] }) });
+        b.textContent = "Getting · see Following";
+      } catch (error) { b.disabled = false; b.textContent = "Get"; $("#find-status").textContent = error.message; }
+    }));
     $$("[data-follow-studio]", $("#find-scenes")).forEach((b) => b.addEventListener("click", async () => {
       const s = scenes[Number(b.dataset.followStudio)];
       b.disabled = true;
@@ -3572,11 +3580,18 @@ async function loadFollows() {
   try {
     const data = await api("api/private/follows", { cache: "no-store" });
     $("#follow-list").innerHTML = data.follows.length ? `<ul class="find-list">${data.follows.map((f) => `<li class="find-row"><div><strong>${esc(f.name)}</strong><span>${f.kind === "studio" ? "Studio" : "Performer"}</span></div><div class="find-actions"><button type="button" class="text-button" data-unfollow="${esc(f.kind)}/${esc(f.id)}">Unfollow</button></div></li>`).join("")}</ul>` : '<p class="hint">Nothing yet. Look up a studio or performer above.</p>';
-    $("#follow-wanted").innerHTML = data.wanted.length ? `<ul class="find-list">${data.wanted.map((w) => `<li class="find-row"><div><strong>${esc(w.title)}</strong><span>${esc([w.studio, w.date, (w.performers || []).join(", ")].filter(Boolean).join(" · "))}</span>${w.release ? `<span class="find-why">${esc(w.release)}</span>` : ""}</div><div class="find-actions"><span class="find-status-chip" data-status="${esc(w.status)}">${esc(WANTED_STATUS[w.status] || w.status)}</span></div></li>`).join("")}</ul>` : '<p class="hint">New scenes from what you follow show up here.</p>';
+    $("#follow-wanted").innerHTML = data.wanted.length ? `<ul class="find-list">${data.wanted.map((w) => `<li class="find-row"><div><strong>${esc(w.title)}</strong><span>${esc([w.studio, w.date, (w.performers || []).join(", ")].filter(Boolean).join(" · "))}</span>${w.release ? `<span class="find-why">${esc(w.release)}</span>` : ""}</div><div class="find-actions">${w.via === "get" ? '<span class="find-status-chip">Get</span>' : ""}<span class="find-status-chip" data-status="${esc(w.status)}">${esc(WANTED_STATUS[w.status] || w.status)}</span>${["waiting", "not_found"].includes(w.status) ? `<button type="button" class="text-button" data-unwant="${esc(w.scene_id)}">Remove</button>` : ""}</div></li>`).join("")}</ul>` : '<p class="hint">New scenes from what you follow, and scenes you Get, show up here.</p>';
   } catch (error) {
     $("#follow-list").textContent = error.message;
   }
 }
+$("#follow-wanted").addEventListener("click", async (event) => {
+  const b = event.target.closest("[data-unwant]");
+  if (!b) return;
+  b.disabled = true;
+  await api(`api/private/wanted/${encodeURIComponent(b.dataset.unwant)}`, { method: "DELETE" }).catch(() => {});
+  loadFollows();
+});
 $("#follow-list").addEventListener("click", async (event) => {
   const b = event.target.closest("[data-unfollow]");
   if (!b) return;

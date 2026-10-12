@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.9 — 2026-10-11
+
+- **Get scenes from Find.** Every scene Find suggests has a Get button: tap it on as many as you like. Each one is looked for in the background and downloads by itself when a clear match turns up (the right studio plus performers, or the scene code), never a guess. They share the Following tab's list, now called Wanted scenes, with a Remove button while one is still being looked for. Older scenes are looked for at least two weeks.
+
 ## 1.0.8 — 2026-10-10
 
 - **Play Stash scenes in Omnarr.** Unlocked Private scenes have a Play button in Omnarr's own player: the file itself when the browser can play it, otherwise Stash's on-the-fly conversion, both through Omnarr. Your place is saved in Omnarr, and for the owner in Stash too (a finished play counts as a play there).
