@@ -196,6 +196,8 @@ in their connection. Adult libraries stay hidden for people without that permiss
 off in Settings → Help for your devices. Deleting someone's Omnarr account removes these logins
 too.
 
+**Activity that explains itself.** Each download says what it's doing and when it should arrive, a Coming up list shows the next two weeks of episodes and movies, and admins see the problems Sonarr, Radarr and Prowlarr report about themselves.
+
 **Find and follow (Private).** In the unlocked private section, admins can search their adult
 indexers by meaning rather than exact release names: Omnarr looks the words up on StashDB
 (through Stash), rewrites them the way uploaders name things, searches several spellings at

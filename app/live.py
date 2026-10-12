@@ -380,7 +380,8 @@ def activity(cfg):
                          "episode": f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}" if ep else "",
                          "progress": round(100 * (1 - left / size)) if size else 0, "status": x.get("status"),
                          "tracked": x.get("trackedDownloadStatus"), "state": x.get("trackedDownloadState"),
-                         "eta": x.get("timeleft"),
+                         "eta": x.get("timeleft"), "download_id": x.get("downloadId") or "",
+                         "error": x.get("errorMessage") or "",
                          "messages": [m for s_ in x.get("statusMessages") or [] for m in s_.get("messages") or []][:2]})
         return {"total": q.get("totalRecords", len(rows)), "records": rows}
 
@@ -388,6 +389,14 @@ def activity(cfg):
         safe("sonarr", lambda: arr_queue("sonarr"))
     if cfg.source("radarr"):
         safe("radarr", lambda: arr_queue("radarr"))
+    from . import insight
+    try:
+        insight.annotate(cfg, out)                    # plain-English "why" + "arrives in"
+    except Exception as e:
+        log.warning("download explanations failed: %s", e)
+    if cfg.source("sonarr") or cfg.source("radarr"):
+        safe("coming", lambda: insight.coming_up(cfg))
+        safe("health", lambda: insight.health(cfg))
     if cfg.source("seerr"):
         def seerr():
             s = cfg.source("seerr")

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.10 — 2026-10-11
+
+- **Downloads explain themselves.** Each Sonarr/Radarr download in Activity says in plain words what's going on (downloading from N people, waiting in line 40 of 246, stuck because nobody is sharing it, downloaded but couldn't be added to the library and why, already in your library) and when it should arrive. Connect qBittorrent for the details from qBittorrent itself.
+- **Coming up:** the next two weeks of episodes and movies you're waiting on.
+- **Health (admins):** problems Sonarr, Radarr and Prowlarr report about themselves, such as failing indexers, with a link to how to fix each.
+
 ## 1.0.9 — 2026-10-11
 
 - **Get scenes from Find.** Every scene Find suggests has a Get button: tap it on as many as you like. Each one is looked for in the background and downloads by itself when a clear match turns up (the right studio plus performers, or the scene code), never a guess. They share the Following tab's list, now called Wanted scenes, with a Remove button while one is still being looked for. Older scenes are looked for at least two weeks.

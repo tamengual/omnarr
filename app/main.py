@@ -1788,6 +1788,8 @@ def api_activity(request: Request):
     out["wanted_books"] = [w for w in wanted.list_all(STATE) if w["status"] != "done"]
     if _owner_identity(_session(request)):              # who's playing what: admins only
         out["watching"] = watching.activity(STATE, INDEX)
+    else:
+        out.pop("health", None)                          # the apps' own problems: admins only
     return out
 
 

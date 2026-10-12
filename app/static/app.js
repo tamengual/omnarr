@@ -2692,7 +2692,12 @@ function monitorButton(action, payload, monitored, context) {
 
 function downloadStatus(record, label = "Download") {
   const warning = ["warning", "error"].includes(String(record.tracked).toLowerCase()) || ["warning", "failed", "error"].includes(String(record.status).toLowerCase());
-  return `<div class="download-status${warning ? " has-warning" : ""}"><div class="progress-caption"><span>${esc(record.status || "Downloading")} · ${Math.round(percent(record.progress))}%</span>${record.eta ? `<span>ETA ${esc(record.eta)}</span>` : ""}</div>${progressBar(record.progress, label)}${record.state ? `<p class="hint">${esc(record.state)}</p>` : ""}${warning ? '<p class="warning-label">Needs attention</p>' : ""}${Array.isArray(record.messages) && record.messages.length ? `<ul class="download-messages">${record.messages.map((message) => `<li>${esc(message)}</li>`).join("")}</ul>` : ""}</div>`;
+  // record.note / arrives / stuck come from insight.py (Sonarr/Radarr queues); episode rows don't have them
+  const explained = record.note !== undefined;
+  const caption = explained ? `${Math.round(percent(record.progress))}%` : `${esc(record.status || "Downloading")} · ${Math.round(percent(record.progress))}%`;
+  const when = explained ? (record.arrives ? `<span>Arrives ${esc(record.arrives)}</span>` : "") : record.eta ? `<span>ETA ${esc(record.eta)}</span>` : "";
+  const detail = explained && record.note ? `<p class="download-note${record.stuck ? " is-stuck" : ""}">${esc(record.note)}</p>` : record.state ? `<p class="hint">${esc(record.state)}</p>` : "";
+  return `<div class="download-status${warning || record.stuck ? " has-warning" : ""}"><div class="progress-caption"><span>${caption}</span>${when}</div>${progressBar(record.progress, label)}${detail}${warning && !explained ? '<p class="warning-label">Needs attention</p>' : ""}${Array.isArray(record.messages) && record.messages.length ? `<ul class="download-messages">${record.messages.map((message) => `<li>${esc(message)}</li>`).join("")}</ul>` : ""}</div>`;
 }
 
 function episodeRow(episode, canManage) {
@@ -3074,6 +3079,23 @@ function watchingActivity(data) {
     + '<p class="hint">Only covers what people play or read inside Omnarr, not in the Jellyfin, Audiobookshelf or Komga apps.</p>';
 }
 
+function healthActivity(items) {
+  if (!Array.isArray(items)) return serviceError(items, "Health") || "";
+  return `<ul class="activity-list health-list">${items.map((item) => `<li class="health-row health-${esc(item.level)}"><strong>${esc(item.app)}</strong> ${esc(item.message)}${item.link ? ` <a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">How to fix ↗</a>` : ""}</li>`).join("")}</ul>`;
+}
+
+function comingActivity(items) {
+  if (!Array.isArray(items)) return serviceError(items, "Calendar") || "";
+  if (!items.length) return '<p class="hint">Nothing you’re waiting on comes out in the next two weeks.</p>';
+  const day = (iso) => {
+    const d = new Date(`${iso}T12:00:00`), today = new Date();
+    today.setHours(12, 0, 0, 0);
+    const diff = Math.round((d - today) / 86400000);
+    return diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  };
+  return `<ul class="activity-list coming-list">${items.map((item) => `<li class="coming-row"><span class="coming-date">${esc(day(item.date))}</span><div><strong>${esc(item.title)}</strong><span class="hint"> ${esc(item.detail)}</span></div></li>`).join("")}</ul>`;
+}
+
 function activitySection(title, app, body) {
   return `<section class="activity-section"><div class="section-title"><h2>${esc(title)}</h2><span>${esc(app)}</span></div>${body}</section>`;
 }
@@ -3093,7 +3115,7 @@ function downloadGroups(data) {
       groups.get(group).push(record);
     }
     return `<div class="download-service"><h3>${name} <span class="hint">${countText(total)} in queue</span></h3>${total > records.length ? `<p class="hint">Showing ${countText(records.length)} of ${countText(total)} queue entries reported by ${name}.</p>` : ""}${[...groups].map(([title, items]) => {
-      const warnings = items.filter((item) => /warning|error/i.test(item.tracked || "") || /warning|error|failed/i.test(item.status || "")).length;
+      const warnings = items.filter((item) => item.stuck || /warning|error/i.test(item.tracked || "") || /warning|error|failed/i.test(item.status || "")).length;
       const average = items.reduce((sum, item) => sum + percent(item.progress), 0) / items.length;
       return `<details class="download-group${warnings ? " has-warning" : ""}" data-disclosure="${esc(`${source}:${title}`)}"${items.length <= 3 ? " open" : ""}><summary><strong>${countText(items.length)} ${esc(title)}${source === "sonarr" ? ` episode${items.length === 1 ? "" : "s"}` : ` download${items.length === 1 ? "" : "s"}`}</strong><span>${Math.round(average)}% average${warnings ? ` · ${warnings} need attention` : ""}</span></summary><div class="download-records">${items.map((record) => `<article class="download-record"><h4>${esc(record.episode || record.item || "Movie")}</h4><p class="release-name">${esc(record.title)}</p>${downloadStatus(record, `${title} ${record.episode || ""} download`)}</article>`).join("")}</div></details>`;
     }).join("") || '<p class="hint">No active downloads.</p>'}</div>`;
@@ -3190,7 +3212,9 @@ function renderActivity(data) {
   const logs = serviceError(data.logs, "Logs") || [["readalong_linker", "Read-along linker"], ["stash_identify", "Stash identify"]].map(([key, label]) => `<h3>${label}</h3><pre class="log-tail">${esc(Array.isArray(data.logs?.[key]) && data.logs[key].length ? data.logs[key].join("\n") : "No log lines reported.")}</pre>`).join("");
   root.innerHTML = (data.watching ? activitySection("Who’s playing", "In Omnarr", watchingActivity(data.watching)) : "")
     + activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue())
+    + (data.health && data.health.length ? activitySection("Health", "Problems the apps report", healthActivity(data.health)) : "")
     + activitySection("Downloads", "Sonarr + Radarr", downloadGroups(data))
+    + (data.coming ? activitySection("Coming up", "Next two weeks", comingActivity(data.coming)) : "")
     + activitySection("Movie & TV requests", "Seerr", requestActivity(data.requests))
     + activitySection("Games", "ROMarr", games)
     + activitySection("Books", "Shelfmark", genericActivity(data.books, "Books", "No active book downloads."))

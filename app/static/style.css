@@ -965,3 +965,10 @@ span.offline-work { border: 0; color: var(--muted); align-self: center; }
 .find-types { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .find-type { border: 1px solid var(--line); background: none; color: var(--muted); padding: 3px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
 .find-type[aria-pressed=true] { color: inherit; border-color: var(--scene); background: color-mix(in srgb, var(--scene) 14%, transparent); }
+.download-note { margin: 6px 0 0; font-size: 13px; }
+.download-note.is-stuck { color: var(--accent); font-weight: 600; }
+.health-row { padding: 8px 10px; border-left: 3px solid var(--line); border-radius: 3px; margin-bottom: 6px; background: var(--bg-raised); font-size: 13px; list-style: none; }
+.health-error { border-left-color: var(--accent); }
+.health-warning { border-left-color: var(--focus); }
+.coming-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); list-style: none; }
+.coming-date { font-size: 12px; color: var(--muted); font-weight: 600; }
