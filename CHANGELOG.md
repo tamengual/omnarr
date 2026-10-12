@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.11 — 2026-10-11
+
+- The 1.0.10 changes, released properly (1.0.10's build stopped on an out-of-date test and was never published).
+
 ## 1.0.10 — 2026-10-11
 
 - **Downloads explain themselves.** Each Sonarr/Radarr download in Activity says in plain words what's going on (downloading from N people, waiting in line 40 of 246, stuck because nobody is sharing it, downloaded but couldn't be added to the library and why, already in your library) and when it should arrive. Connect qBittorrent for the details from qBittorrent itself.

@@ -17,8 +17,8 @@ def test_arrival_wording():
 
 def test_explanations():
     e = insight.explain
-    note, stuck = e({"state": "importBlocked", "messages": ["Episode file already imported"]}, "Sonarr")
-    assert stuck and "couldn't add it to the library: Episode file already imported" in note
+    note, stuck = e({"state": "importBlocked", "messages": ["Unable to determine if file is a sample"]}, "Sonarr")
+    assert stuck and "couldn't add it to the library: Unable to determine if file is a sample" in note
     done = e({"state": "importBlocked", "messages": ["Episode file already imported at 10/11/2026 00:25:57"]}, "Sonarr")
     assert done == ("Already in your library. This is a leftover queue entry that can be cleared.", False)
     assert e({"state": "failedPending"}, "Radarr")[0].startswith("The download failed")
