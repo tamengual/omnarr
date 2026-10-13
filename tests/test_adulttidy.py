@@ -72,7 +72,8 @@ class Apps:
             if "stashBoxes" in q:
                 return httpx.Response(200, json={"data": {"configuration": {"general": {"stashBoxes": [{"endpoint": "https://stashdb.test/graphql", "api_key": ""}]}}}})
             if "findScenes" in q:
-                s = self.scenes.get(v["p"])
+                assert v["p"].startswith('"') and v["p"].endswith('"')      # exact-phrase search, not any-word
+                s = self.scenes.get(v["p"].strip('"'))
                 return httpx.Response(200, json={"data": {"findScenes": {"scenes": [s] if s else []}}})
             for kind in ("Studios", "Performers", "Tags"):
                 if f"find{kind}" in q:
@@ -123,6 +124,29 @@ def test_tidy_renames_and_fills_in_stash(tmp_path, monkeypatch):
     assert tidy.tidy(cfg, state, lambda: refreshed.append(1)) == []          # done once; the unfinished one waits
     con = af.grabs_con(state)
     assert [r[0] for r in con.execute("SELECT guid FROM adult_grabs WHERE tidied IS NULL")] == ["g3"]
+
+
+def test_unfinished_download_is_not_swapped_for_a_finished_neighbour(tmp_path, monkeypatch):
+    """Two grabs sent together: the one still downloading must wait, not take the other's finished file."""
+    state = str(tmp_path / "state.db")
+    apps = Apps()
+
+    def handler(req):
+        if req.url.host == "qbit" and req.url.path.endswith("/torrents/info"):
+            return httpx.Response(200, json=[
+                {"hash": "h1", "name": "Gymnast Double Penetration - James Ash, James Cassidy & Bryce Jax (2025-06-09).mp4",
+                 "progress": 1, "added_on": time.time() - 60},
+                {"hash": "h9", "name": "Rhyheim Shabazz, Romeo J, Nick Floyd.mp4", "progress": 0.5, "added_on": time.time() - 60}])
+        return apps(req)
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: real(*a, transport=httpx.MockTransport(handler), **k))
+    cfg = Cfg({"qbittorrent": {"url": "http://qbit"}, "stash": {"url": "http://stash", "api_key": "k", "downloads_path": "/downloads"}})
+    con = af.grabs_con(state)
+    with con:
+        con.execute("INSERT INTO adult_grabs (guid, title, account_id, at) VALUES ('g9', ?, 1, ?)",
+                    ("[OnlyFans.com] Rhyheim Shabazz, Romeo J (RomeoGotDick), Nick Floyd [2026 ., Bareback, 720p]", time.time() - 60))
+    con.close()
+    assert tidy.tidy(cfg, state) == [] and apps.renames == [] and apps.updates == []
 
 
 def test_qbittorrent_login_old_and_new_replies(monkeypatch):

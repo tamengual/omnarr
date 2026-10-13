@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.14 — 2026-10-13
+
+- **Private downloads get renamed reliably.** Finding a finished download in Stash searched for any word of its file name, so the right scene was often outside the first page of results and the file was skipped. It now searches for the exact name.
+- Matching a download to its request also compares against just the studio and title (long tag lists in release names used to drown the match), and a request whose own download is still running waits instead of taking a finished neighbour's file.
+
 ## 1.0.13 — 2026-10-13
 
 - **qBittorrent 5 logins.** qBittorrent 5.x answers a correct login with an empty reply instead of "Ok.", so Omnarr's Test called a right password wrong and the Private download renamer couldn't sign in. Both now accept the old and new replies.

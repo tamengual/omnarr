@@ -174,7 +174,7 @@ def _gql(c, query, variables=None):
 def stash_scene(c, basename):
     d = _gql(c, """query($p:String!){ findScenes(scene_filter:{path:{value:$p, modifier:INCLUDES}}, filter:{per_page:5}) {
         scenes { id title date organized studio { name } performers { name } stash_ids { stash_id } files { path } } } }""",
-             {"p": basename})
+             {"p": '"' + basename.replace('"', "") + '"'})          # quoted: unquoted INCLUDES matches any of the words
     for s in d["findScenes"]["scenes"]:
         if any(os.path.basename(f["path"]) == basename for f in s["files"]):
             return s
@@ -223,6 +223,15 @@ def _similar(a, b):
     return difflib.SequenceMatcher(None, af.norm(a), af.norm(b)).ratio()
 
 
+def _match_score(torrent, grab):
+    """How well a torrent fits a grab: its name against the full release title or just studio + title
+    (long tag lists drown the real name), plus a little for starting within 15 minutes of the grab."""
+    p = parse_release(grab["title"])
+    core = " ".join(x for x in (p["studio"], p["title"]) if x)
+    s = max(_similar(torrent["name"], grab["title"]), _similar(torrent["name"], core) if core else 0)
+    return s + (0.2 if abs(torrent.get("added_on", 0) - grab["at"]) < 900 else 0)
+
+
 def work_out(cfg, grab_row, scene_now):
     """(meta, how) for one finished download."""
     if scene_now and scene_now.get("stash_ids"):                       # Stash matched it by fingerprint
@@ -265,17 +274,20 @@ def tidy(cfg, state_path, reindex=None):
     done, men = [], af.prefs(state_path)["gay_only"]
     with qbit(cfg) as q, af._stash(cfg) as st:
         endpoint = af.stashbox_endpoint(st)
-        torrents = [t for t in q.get("/torrents/info", params={"category": category}).json() if t.get("progress", 0) >= 1]
+        torrents = q.get("/torrents/info", params={"category": category}).json()
         claimed = {g["hash"] for g in grabs if g["hash"]}
         for g in grabs:
             t = next((t for t in torrents if t["hash"] == g["hash"]), None) if g["hash"] else None
             if not t:                                                  # match by name, close to when it was sent
+                # finished or not, so a grab whose own download is still running can't take a finished neighbour's
                 near = [t for t in torrents if t["hash"] not in claimed and abs(t.get("added_on", 0) - g["at"]) < 6 * 3600]
-                scored = sorted(((_similar(t["name"], g["title"]), t) for t in near), key=lambda x: -x[0])
-                if not scored or scored[0][0] < 0.3:
+                scored = sorted(((_match_score(t, g), t) for t in near), key=lambda x: -x[0])
+                if not scored or scored[0][0] < 0.4:
                     continue
                 t = scored[0][1]
                 claimed.add(t["hash"])
+            if t.get("progress", 0) < 1:                               # still downloading: next time
+                continue
             f = _video_file(q, t["hash"])
             if not f:
                 continue
