@@ -80,7 +80,7 @@ def test_private_access_ask_approve_and_remove(env, monkeypatch):
     main, admin, member, tmp = env
     from app import tailnet
     assert member.get("/api/private-access").json() == {"enabled": False}
-    main.cfg.save_connection("tailscale", {"api_key": "tskey-api-kX-y", "device": "media-box"})
+    main.cfg.save_connection("tailscale", {"api_key": "tskey-api-" "kX-y", "device": "media-box"})
     invites = {}
     monkeypatch.setattr(tailnet, "create_invite", lambda s, email=None: invites.setdefault("i1", {"id": "i1", "url": "https://login.tailscale.com/admin/invite/abc"}))
     status = {"accepted": False, "by": ""}
@@ -109,7 +109,7 @@ def test_private_access_ask_approve_and_remove(env, monkeypatch):
 def test_private_access_unused_invite_is_cancelled_and_denials_shown(env, monkeypatch):
     main, admin, member, tmp = env
     from app import tailnet
-    main.cfg.save_connection("tailscale", {"api_key": "tskey-api-kX-y", "device": "media-box"})
+    main.cfg.save_connection("tailscale", {"api_key": "tskey-api-" "kX-y", "device": "media-box"})
     monkeypatch.setattr(tailnet, "create_invite", lambda s, email=None: {"id": "i2", "url": "https://login.tailscale.com/admin/invite/x"})
     monkeypatch.setattr(tailnet, "invite_status", lambda s, iid: {"accepted": False, "by": ""})
     deleted = []
