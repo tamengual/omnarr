@@ -123,3 +123,37 @@ def test_tidy_renames_and_fills_in_stash(tmp_path, monkeypatch):
     assert tidy.tidy(cfg, state, lambda: refreshed.append(1)) == []          # done once; the unfinished one waits
     con = af.grabs_con(state)
     assert [r[0] for r in con.execute("SELECT guid FROM adult_grabs WHERE tidied IS NULL")] == ["g3"]
+
+
+def test_qbittorrent_login_old_and_new_replies(monkeypatch):
+    """A good login is 200 "Ok." on qBittorrent 4.x and an empty 204 on 5.x; a wrong one is 200 "Fails." or 401."""
+    from app.connectors.registry import _test_qbittorrent
+    real = httpx.Client
+
+    def fake(login):
+        def handler(req):
+            p = req.url.path
+            if p.endswith("/auth/login"):
+                return login
+            if p.endswith("/app/version"):
+                return httpx.Response(200, text="v5.2.4")
+            if p.endswith("/torrents/info"):
+                return httpx.Response(200, json=[])
+            return httpx.Response(404)
+        monkeypatch.setattr(httpx, "Client", lambda *a, **k: real(*a, transport=httpx.MockTransport(handler), **k))
+
+    s = {"url": "http://qbit", "username": "admin", "password": "pw"}
+    for good in (httpx.Response(204), httpx.Response(200, text="Ok.")):
+        fake(good)
+        ok, msg = _test_qbittorrent(s)
+        assert ok and "v5.2.4" in msg
+        with tidy.qbit(Cfg({"qbittorrent": s})) as c:
+            assert c is not None
+    for bad in (httpx.Response(401, text="Unauthorized"), httpx.Response(200, text="Fails.")):
+        fake(bad)
+        assert _test_qbittorrent(s) == (False, "qBittorrent didn't accept that login")
+        try:
+            with tidy.qbit(Cfg({"qbittorrent": s})):
+                raise AssertionError("bad login accepted")
+        except RuntimeError:
+            pass

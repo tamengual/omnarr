@@ -150,7 +150,7 @@ def qbit(cfg):
     with httpx.Client(base_url=s["url"].rstrip("/") + "/api/v2", timeout=30, headers={"Referer": s["url"]}) as c:
         if s.get("username") or s.get("password"):
             r = c.post("/auth/login", data={"username": s.get("username") or "", "password": s.get("password") or ""})
-            if r.text.strip() != "Ok.":
+            if not (r.status_code == 204 or (r.status_code == 200 and r.text.strip() == "Ok.")):
                 raise RuntimeError("qBittorrent didn't accept the login in Connections")
         yield c
 

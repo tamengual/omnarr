@@ -88,10 +88,11 @@ def _test_qbittorrent(s):
         if s.get("username") or s.get("password"):
             r = c.post("/api/v2/auth/login", data={"username": s.get("username") or "", "password": s.get("password") or ""},
                        headers={"Referer": s["url"]})
-            if r.status_code != 200 or r.text.strip() != "Ok.":
+            # 4.x answers 200 "Ok."; 5.x answers 204 with no body, and 401 for a wrong password
+            if not (r.status_code == 204 or (r.status_code == 200 and r.text.strip() == "Ok.")):
                 return False, "qBittorrent didn't accept that login"
         v = c.get("/api/v2/app/version")
-        if v.status_code == 403:
+        if v.status_code in (401, 403):
             return False, "qBittorrent wants a login: add its username and password"
         v.raise_for_status()
         n = len(c.get("/api/v2/torrents/info", params={"category": s.get("category") or "stash"}).json())
