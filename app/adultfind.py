@@ -561,7 +561,31 @@ def _fcon(state_path):
     con = sqlite3.connect(state_path, timeout=15)
     con.row_factory = sqlite3.Row
     con.executescript(FOLLOW_SCHEMA)
+    if "tried" not in {r[1] for r in con.execute("PRAGMA table_info(adult_wanted)")}:
+        con.execute("ALTER TABLE adult_wanted ADD COLUMN tried TEXT")     # copies that stalled: [{guid, title}]
     return con
+
+
+def retry_scene(state_path, scene, guid, title, account_id=None):
+    """A download for this scene stalled: look for it again, never picking that copy. Returns copies tried so far
+    (at MAX_TRIES or more the scene is set aside as not_found)."""
+    from .stalls import MAX_TRIES
+    keep = {k: scene.get(k) for k in ("id", "title", "code", "date", "studio", "studio_aliases", "performers", "url")}
+    con = _fcon(state_path)
+    with con:
+        row = con.execute("SELECT tried FROM adult_wanted WHERE scene_id=?", (scene["id"],)).fetchone()
+        tried = json.loads(row["tried"] or "[]") if row else []
+        tried.append({"guid": guid, "title": title})
+        status = "waiting" if len(tried) < MAX_TRIES else "not_found"
+        if row:
+            con.execute("UPDATE adult_wanted SET status=?, last_try=0, tried=? WHERE scene_id=?",
+                        (status, json.dumps(tried), scene["id"]))
+        else:                                     # grabbed straight from Find: now it's on the list
+            con.execute("""INSERT INTO adult_wanted (scene_id, scene, follow, status, added, tried)
+                           VALUES (?,?,?,?,?,?)""", (scene["id"], json.dumps(keep), f"get:{account_id or ''}",
+                                                    status, time.time(), json.dumps(tried)))
+    con.close()
+    return len(tried)
 
 
 def _stashdb(cfg):
@@ -637,7 +661,7 @@ def wanted_list(state_path, limit=60):
             sc = json.loads(r["scene"])
             out.append({"scene_id": r["scene_id"], "title": sc.get("title"), "studio": sc.get("studio"),
                         "performers": sc.get("performers"), "date": sc.get("date"), "status": r["status"],
-                        "tries": r["tries"], "release": r["release"] or "",
+                        "tries": r["tries"], "release": r["release"] or "", "stalled": len(json.loads(r["tried"] or "[]")),
                         "via": "get" if (r["follow"] or "").startswith("get:") else "follow"})
         return out
     finally:
@@ -669,9 +693,13 @@ def _owned(cfg, scene_id, endpoint):
     return ((r.json().get("data") or {}).get("findScenes") or {}).get("count", 0) > 0
 
 
-def best_release(found):
-    """The release to download automatically, or None when nothing is a clear match."""
-    good = [r for r in found["results"] if r["match"] and r["score"] >= MIN_SCORE and (r["seeders"] or 0) > 0]
+def best_release(found, tried=()):
+    """The release to download automatically, or None when nothing is a clear match.
+    tried: copies that already stalled ([{guid, title}]); the same release posted elsewhere counts too."""
+    bad_guids = {t.get("guid") for t in tried}
+    bad_titles = {compact(t.get("title") or "") for t in tried} - {""}
+    good = [r for r in found["results"] if r["match"] and r["score"] >= MIN_SCORE and (r["seeders"] or 0) > 0
+            and r["guid"] not in bad_guids and compact(r["title"]) not in bad_titles]
     return max(good, key=lambda r: (r["score"], r["seeders"] or 0)) if good else None
 
 
@@ -765,7 +793,7 @@ def _work_wanted(cfg, state_path, audit, only):
                     con.execute("UPDATE adult_wanted SET status='have' WHERE scene_id=?", (r["scene_id"],))
                 continue
             searched += 1
-            pick = best_release(find(cfg, "", scene, gay_only=prefs(state_path)["gay_only"]))
+            pick = best_release(find(cfg, "", scene, gay_only=prefs(state_path)["gay_only"]), json.loads(r["tried"] or "[]"))
             if pick:
                 who = (r["follow"] or "").split(":", 1)
                 grab(cfg, state_path, int(who[1]) if who[0] == "get" and who[1].isdigit() else None,

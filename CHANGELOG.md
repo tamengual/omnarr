@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.15 — 2026-10-14
+
+- **"Ready to watch" for movie and TV requests.** Omnarr now remembers who asked for each movie or show and tells that person (email, or your notification webhook) once it can actually be played in Jellyfin or Plex, not just when a file lands. Shows say when only the first episodes are in. The message links straight to the title (set your public address in Settings for the link). Members see their movie and TV requests in Activity → Requests, with a Watch button once they're ready. Requests that never turn up are dropped after 180 days.
+- **Stalled Private downloads get replaced.** A Private download that gets nothing new for 6 hours (including ones that never start) is removed with its partial files. If it was for a known scene, the scene goes back on the list and a different copy is picked: the dead one, and the same release posted on another site, are skipped. After three dead copies the scene is set aside. At most three are replaced per check, and finished downloads are never touched, so seeding for your ratio carries on. (Sonarr and Radarr downloads are left to those apps or decluttarr.)
+
 ## 1.0.14 — 2026-10-13
 
 - **Private downloads get renamed reliably.** Finding a finished download in Stash searched for any word of its file name, so the right scene was often outside the first page of results and the file was skipped. It now searches for the exact name.

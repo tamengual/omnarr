@@ -30,7 +30,7 @@ cfg = config_mod.load()
 INDEX = cfg.get("index.path", "/data/index.db")
 STATE = cfg.get("index.state", "/data/state.db")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-from . import adultfind, adulttidy, devices, extend, provision, tailnet, watching  # noqa: E402
+from . import adultfind, adulttidy, devices, extend, provision, screenready, stalls, tailnet, watching  # noqa: E402
 # Plug-ins: *.py files in /data/plugins (or OMNARR_PLUGINS). See docs/extending.md.
 extend.load_plugins(os.environ.get("OMNARR_PLUGINS") or os.path.join(os.path.dirname(STATE) or ".", "plugins"))
 SESSION_DAYS = 90
@@ -1076,9 +1076,14 @@ def _do_screen(body, account_id=None):
         return _send_custom(route, {"format": body["kind"], "title": body.get("title") or "", "ids": {"tmdb": str(body["tmdb"])},
                                     "requested_by": account_id})
     try:
-        return requests_.seerr_request(cfg, body["kind"], body["tmdb"])
+        out = requests_.seerr_request(cfg, body["kind"], body["tmdb"])
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    try:                                   # so the person who asked hears when it's watchable
+        screenready.record(STATE, account_id, body["kind"], body["tmdb"], body.get("title") or "")
+    except Exception as e:
+        log.warning("couldn't remember the request for a ready notice: %s", e)
+    return out
 
 
 @app.post("/api/request/screen")
@@ -1094,7 +1099,7 @@ async def api_request_screen(request: Request):
             except Exception:
                 pass
         return _queue(request, "screen", title or f"{body['kind']} {body['tmdb']}", body)
-    return _do_screen(body)
+    return _do_screen(body, (_account(request) or {}).get("id"))
 
 
 # ── live detail, actions, activity ───────────────────────────────────────────
@@ -2277,10 +2282,13 @@ def api_requests(request: Request):
             rows = con.execute(q + " WHERE q.account_id=? ORDER BY q.created DESC LIMIT 50", (acct["id"],)).fetchall()
     finally:
         con.close()
+    screens = screenready.mine(STATE, None if acct["role"] == "admin" else acct["id"])
     return {"requests": [{"id": r["id"], "kind": r["kind"], "title": r["title"], "status": r["status"], "by": r["username"],
                           "created": r["created"], "decided_by": r["decided_by"], "decided_at": r["decided_at"],
                           "note": r["note"]} for r in rows],
-            "pending": sum(1 for r in rows if r["status"] == "pending")}
+            "pending": sum(1 for r in rows if r["status"] == "pending"),
+            "screens": [{"kind": s["kind"], "title": s["title"], "status": s["status"], "created": s["created"],
+                         "ready_at": s["ready_at"], "work_id": s["work_id"], "partial": bool(s["partial"])} for s in screens]}
 
 
 def _decide(request, rid, approve, note=""):
@@ -2488,6 +2496,17 @@ def _wanted_loop():
     while True:
         _wanted_tick()                  # cheap when nothing is due: a few DB reads
         try:
+            con = state()
+            try:
+                public = (_setting(con, "public_url") or "").strip()
+            finally:
+                con.close()
+            ready = screenready.tick(cfg, STATE, INDEX, public)  # movie/TV requests that became watchable
+            if ready:
+                log.info("requests ready to watch: %s", ready)
+        except Exception as e:
+            log.error("ready check failed: %s", e, exc_info=True)
+        try:
             from . import auto4k
             auto4k.run(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))     # big visual movies -> 4K
         except Exception as e:
@@ -2515,6 +2534,13 @@ def _adult_loop():
                     res = adultfind.check_follows(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))
                     if res.get("new") or res.get("grabbed"):
                         log.info("followed scenes: %s", res)
+                if cfg.source("qbittorrent"):
+                    try:                                     # dead copies get swapped for another one
+                        replaced = stalls.tick(cfg, STATE, lambda a, p, r: live._audit(STATE, a, p, r))
+                        if replaced:
+                            log.info("stalled private downloads: %s", replaced)
+                    except Exception as e:
+                        log.error("stalled download check failed: %s", e, exc_info=True)
                 busy = adultfind.pending(STATE)
                 if busy:
                     adultfind.scan_and_identify(cfg)

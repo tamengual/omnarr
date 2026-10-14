@@ -372,6 +372,7 @@ async function boot() {
     settingsWelcome = isAdmin() && Boolean(status.connections_needed);
     if (settingsWelcome) params = new URLSearchParams({ view: "settings" });
     const wantsPrivate = new URLSearchParams(location.hash.slice(1)).get("private") === "1";
+    const wantsWork = new URLSearchParams(location.hash.slice(1)).get("work") || "";   // link from a "ready" notice
     await checkAdultStatus();
     writeHistory(true);
     syncControls();
@@ -380,6 +381,7 @@ async function boot() {
     if (!activityVisible()) refreshActivity(false);
     if (settingsWelcome) $("#settings-title").focus();
     else if (wantsPrivate && adultStatus.enabled) openPrivate();
+    else if (wantsWork) openWork(wantsWork);
   } catch {
     if (OmnarrOffline.showLibrary()) return;
     showAuth(false, "Omnarr could not be reached. Try again in a moment.");
@@ -2984,7 +2986,7 @@ function approvalQueue() {
   const error = approvalError ? `<p class="service-error" role="status">${esc(approvalError)} Use Refresh to try again.${approvalData ? " Showing the last requests update." : ""}</p>` : "";
   if (!approvalData) return error || '<p class="hint">Loading requests…</p>';
   const requests = [...(approvalData.requests || [])].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
-  if (!requests.length) return `${error}<p class="hint">${isAdmin() ? "No requests for approval yet." : "You haven’t asked for anything yet."}</p>`;
+  if (!requests.length) return `${error}${!isAdmin() && approvalData.screens?.length ? "" : `<p class="hint">${isAdmin() ? "No requests for approval yet." : "You haven’t asked for anything yet."}</p>`}`;
   return `${error}<ul class="activity-list approval-list">${requests.map((request) => {
     const id = String(request.id);
     const title = request.title || "Untitled request";
@@ -2996,6 +2998,19 @@ function approvalQueue() {
     return `<li class="approval-row" data-approval-id="${esc(id)}" tabindex="-1"><div class="approval-copy"><strong>${esc(title)}</strong><p class="hint">${esc(kind)} · ${esc(approvalTime(request.created))}${request.by != null ? ` · Asked by ${esc(person(request.by))}` : ""}</p><span class="state-chip ${tone}">${esc(state)}</span>${request.decided_by != null || request.decided_at != null ? `<p class="hint">${request.decided_by != null ? `Decided by ${esc(person(request.decided_by))}` : "Decided"}${request.decided_at != null ? ` · ${esc(approvalTime(request.decided_at))}` : ""}</p>` : ""}${request.note ? `<p class="hint approval-note">${esc(request.note)}</p>` : ""}</div>
       ${state === "pending" ? isAdmin() ? `<form class="approval-actions" aria-label="Review ${esc(title)}"><button class="primary-button" type="button" data-approval-action="approve" aria-label="Approve ${esc(title)}"${disabled}>Approve</button><label class="field">Denial note (optional)<input name="note" data-approval-focus="note" value="${esc(approvalNotes.get(id) || "")}" autocomplete="off"${disabled}></label><button class="secondary-button" type="submit" data-approval-action="deny" aria-label="Deny ${esc(title)}"${disabled}>Deny</button></form>` : `<div class="approval-actions"><button class="text-button" type="button" data-approval-action="withdraw" aria-label="Withdraw ${esc(title)}"${disabled}>Withdraw</button></div>` : ""}
       <p class="hint request-message" role="status" tabindex="-1" data-approval-focus="message">${esc(approvalMessages.get(id) || "")}</p></li>`;
+  }).join("")}</ul>`;
+}
+
+function screenRequests() {
+  const items = approvalData?.screens || [];
+  if (!items.length) return "";
+  const label = { waiting: "On its way", ready: "Ready to watch", expired: "Not found yet" };
+  const tone = { waiting: "state-coming", ready: "state-available", expired: "state-missing" };
+  return `<h3>Movies and shows you asked for</h3><ul class="activity-list">${items.map((item) => {
+    const kind = item.kind === "movie" ? "Movie" : "TV";
+    const status = item.status === "ready" && item.partial ? "First episodes ready" : label[item.status] || item.status;
+    const watch = item.status === "ready" && item.work_id ? `<button type="button" class="secondary-button" data-watch-work="${esc(item.work_id)}">Watch</button>` : "";
+    return `<li class="request-activity-row"><div><strong>${esc(item.title || kind)}</strong><p class="hint">${kind} · Asked ${esc(approvalTime(item.created))}</p></div><div class="request-states"><span class="state-chip ${tone[item.status] || "state-neutral"}">${esc(status)}</span>${watch}</div></li>`;
   }).join("")}</ul>`;
 }
 
@@ -3211,7 +3226,7 @@ function renderActivity(data) {
   const games = serviceError(data.games, "ROMarr") || `<h3>Download queue</h3>${genericActivity(data.games?.queue, "Game queue", "No games downloading.")}<details class="activity-overflow" data-disclosure="wanted-games"><summary>Wanted games</summary>${genericActivity(data.games?.wanted, "Wanted games", "No missing games on the wanted list.")}</details>`;
   const logs = serviceError(data.logs, "Logs") || [["readalong_linker", "Read-along linker"], ["stash_identify", "Stash identify"]].map(([key, label]) => `<h3>${label}</h3><pre class="log-tail">${esc(Array.isArray(data.logs?.[key]) && data.logs[key].length ? data.logs[key].join("\n") : "No log lines reported.")}</pre>`).join("");
   root.innerHTML = (data.watching ? activitySection("Who’s playing", "In Omnarr", watchingActivity(data.watching)) : "")
-    + activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue())
+    + activitySection("Requests", isAdmin() ? "Needs approval" : "Your requests", approvalQueue() + screenRequests())
     + (data.health && data.health.length ? activitySection("Health", "Problems the apps report", healthActivity(data.health)) : "")
     + activitySection("Downloads", "Sonarr + Radarr", downloadGroups(data))
     + (data.coming ? activitySection("Coming up", "Next two weeks", comingActivity(data.coming)) : "")
@@ -3604,7 +3619,7 @@ async function loadFollows() {
   try {
     const data = await api("api/private/follows", { cache: "no-store" });
     $("#follow-list").innerHTML = data.follows.length ? `<ul class="find-list">${data.follows.map((f) => `<li class="find-row"><div><strong>${esc(f.name)}</strong><span>${f.kind === "studio" ? "Studio" : "Performer"}</span></div><div class="find-actions"><button type="button" class="text-button" data-unfollow="${esc(f.kind)}/${esc(f.id)}">Unfollow</button></div></li>`).join("")}</ul>` : '<p class="hint">Nothing yet. Look up a studio or performer above.</p>';
-    $("#follow-wanted").innerHTML = data.wanted.length ? `<ul class="find-list">${data.wanted.map((w) => `<li class="find-row"><div><strong>${esc(w.title)}</strong><span>${esc([w.studio, w.date, (w.performers || []).join(", ")].filter(Boolean).join(" · "))}</span>${w.release ? `<span class="find-why">${esc(w.release)}</span>` : ""}</div><div class="find-actions">${w.via === "get" ? '<span class="find-status-chip">Get</span>' : ""}<span class="find-status-chip" data-status="${esc(w.status)}">${esc(WANTED_STATUS[w.status] || w.status)}</span>${["waiting", "not_found"].includes(w.status) ? `<button type="button" class="text-button" data-unwant="${esc(w.scene_id)}">Remove</button>` : ""}</div></li>`).join("")}</ul>` : '<p class="hint">New scenes from what you follow, and scenes you Get, show up here.</p>';
+    $("#follow-wanted").innerHTML = data.wanted.length ? `<ul class="find-list">${data.wanted.map((w) => `<li class="find-row"><div><strong>${esc(w.title)}</strong><span>${esc([w.studio, w.date, (w.performers || []).join(", ")].filter(Boolean).join(" · "))}</span>${w.release ? `<span class="find-why">${esc(w.release)}</span>` : ""}${w.stalled ? `<span class="find-why">${w.stalled === 1 ? "1 copy" : `${w.stalled} copies`} stopped downloading and ${w.stalled === 1 ? "was" : "were"} replaced</span>` : ""}</div><div class="find-actions">${w.via === "get" ? '<span class="find-status-chip">Get</span>' : ""}<span class="find-status-chip" data-status="${esc(w.status)}">${esc(WANTED_STATUS[w.status] || w.status)}</span>${["waiting", "not_found"].includes(w.status) ? `<button type="button" class="text-button" data-unwant="${esc(w.scene_id)}">Remove</button>` : ""}</div></li>`).join("")}</ul>` : '<p class="hint">New scenes from what you follow, and scenes you Get, show up here.</p>';
   } catch (error) {
     $("#follow-list").textContent = error.message;
   }
