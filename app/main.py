@@ -895,7 +895,35 @@ def _related_items(w):
 SUGGEST_HOURS = 12
 _suggest_running = set()
 SUGGEST_TITLES = {"up_next": "Up next in your series", "library": "From your library",
+                  "authors": "More from authors you collect", "themes": "Stories about what you love",
                   "screen": "Movies & shows you might like", "worlds": "From worlds you love"}
+
+
+@app.get("/api/me/taste")
+def api_my_taste(request: Request):
+    """Your taste settings, plus the themes Omnarr has worked out from your library so far."""
+    from . import taste
+    aid = _account(request)["id"]
+    st = state()
+    try:
+        row = st.execute("SELECT v FROM settings WHERE k=?", (f"sugg:{aid}",)).fetchone()
+    finally:
+        st.close()
+    return {**taste.prefs(STATE, aid), "profile": (json.loads(row[0]) if row else {}).get("profile")}
+
+
+@app.post("/api/me/taste")
+async def api_my_taste_update(request: Request):
+    """{library_is_read?, more?, less?}: saved, and suggestions are worked out again."""
+    from . import taste
+    aid = _account(request)["id"]
+    body = await request.json()
+    out = taste.set_prefs(STATE, aid, body.get("library_is_read"), body.get("more"), body.get("less"))
+    st = state()
+    with st:                                              # stale: the next visit to For you refreshes
+        st.execute("UPDATE settings SET v=json_set(v, '$.at', 0) WHERE k=?", (f"sugg:{aid}",))
+    st.close()
+    return out
 
 
 def _related_for_row(row):
@@ -926,21 +954,68 @@ def _owned_screens(works, seeds, limit=15):
     return rows[:limit]
 
 
-def _suggest_online(aid, admin):
-    """The sections that need Wikidata/Seerr: computed in the background, cached per person."""
-    from . import suggest
+TASTE_BUDGET = 200          # Open Library subject lookups per refresh (one a second), so a big library fills in over a few runs
+
+
+def _taste(works, seeds, prefs):
+    """Look up what this person's library is about (cached), and return (profile, scorer)."""
+    from . import taste
+    con = search.connect(INDEX)
     try:
+        tmdb = {w_: str(t) for w_, t in con.execute(
+            "SELECT work_id, json_extract(extra,'$.ids.tmdb') FROM editions WHERE json_extract(extra,'$.ids.tmdb') IS NOT NULL")}
+    finally:
+        con.close()
+
+    def key(w):
+        if w["kind"] in ("movie", "show"):
+            return taste.screen_key(w["kind"], tmdb[w["id"]]) if w["id"] in tmdb else None
+        return taste.book_key(w["title"], json.loads(w.get("authors") or "[]"))
+    wanted = []
+    for wid_ in sorted(seeds, key=lambda x: -seeds[x]):
+        w = works[wid_]
+        k = key(w)
+        if k and (w["kind"] in ("book", "comic") or cfg.source("seerr")):
+            wanted.append((k, w["kind"], w["title"], json.loads(w.get("authors") or "[]"), tmdb.get(wid_)))
+    taste.fill(cfg, STATE, wanted, budget=TASTE_BUDGET)
+    seed_terms, library_terms = {}, []
+    for wid_, w in works.items():
+        k = key(w)
+        ts = taste.terms(STATE, k) if k else None
+        if ts:
+            library_terms.append(ts)
+            if wid_ in seeds and seeds[wid_] > 0:
+                seed_terms[wid_] = (seeds[wid_], w["title"], ts)
+    prof = taste.profile(seed_terms, library_terms)
+    return prof, taste.scorer(prof, prefs), len(seed_terms)
+
+
+def _suggest_online(aid, admin):
+    """The sections that need Wikidata/Seerr/Open Library: computed in the background, cached per person."""
+    from . import suggest, taste
+    try:
+        prefs = taste.prefs(STATE, aid)
         con = search.connect(INDEX, aid)
         try:
-            works, seeds = suggest.load(con, aid, admin)
+            works, seeds = suggest.load(con, aid, admin, prefs["library_is_read"])
         finally:
             con.close()
         by_tmdb, by_title = _library_index()
         match = lambda it: _match_library(it, by_tmdb, by_title)
+        prof, fit, known = _taste(works, seeds, prefs)
         st = state()
         try:
             recs = lambda kind, tmdb: requests_.seerr_recommendations(cfg, st, kind, tmdb) if cfg.source("seerr") else []
-            screen = suggest.screen_picks(works, seeds, recs, match, _owned_screens(works, seeds))
+            seen = []                                # first pass: which titles TMDB suggests, so their keywords can be looked up
+            suggest.screen_picks(works, seeds, lambda k, t: seen.extend(recs(k, t)) or recs(k, t), match, _owned_screens(works, seeds))
+            if cfg.source("seerr"):
+                taste.fill(cfg, STATE, [(taste.screen_key(r["kind"], r["tmdb"]), r["kind"], r.get("title") or "", [], r["tmdb"])
+                                        for r in seen[:150]], budget=150)
+            screen_fit = lambda rec: fit(taste.terms(STATE, taste.screen_key(rec["kind"], rec["tmdb"])) or [])
+            screen = suggest.screen_picks(works, seeds, recs, match, _owned_screens(works, seeds), theme=screen_fit)
+            authors = suggest.more_by_authors(works, seeds, lambda a: taste.author_books(STATE, a), match, fit)
+            themes = suggest.theme_picks(prof, lambda t: taste.subject_books(STATE, t), match, fit,
+                                         skip_titles=[a["external"]["title"] for a in authors])
             worlds = suggest.worlds(works, seeds, _related_for_row, match,
                                     skip_tmdb={(s["external"]["kind"], str(s["external"]["tmdb"])) for s in screen})
             gaps = suggest.series_gaps(works, seeds, _related_for_row, match)
@@ -954,9 +1029,12 @@ def _suggest_online(aid, admin):
                                 s["external"].update(poster=d["poster"], status=d["status"], url=d["url"] or s["external"].get("url"))
                         except Exception:
                             pass
+            top = sorted(prof["weights"], key=lambda t: -prof["weights"][t])[:15]
             with st:
                 st.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (f"sugg:{aid}", json.dumps(
-                    {"at": time.time(), "screen": screen, "worlds": worlds, "gaps": gaps})))
+                    {"at": time.time(), "screen": screen, "worlds": worlds, "gaps": gaps, "authors": authors, "themes": themes,
+                     "profile": {"themes": [{"term": t, "like": prof["examples"].get(t, [])} for t in top],
+                                 "known": known, "seeds": len(seeds)}})))
         finally:
             st.close()
     except Exception as e:
@@ -970,13 +1048,13 @@ def api_suggestions(request: Request, refresh: int = 0):
     """{sections: [{key, title, items: [{work | external, reason}]}], refreshing}. Adult items
     are never suggested. Library sections are computed now; the outside ones come from a
     per-person cache that refreshes in the background every SUGGEST_HOURS."""
-    from . import suggest
+    from . import suggest, taste
     sess = _session(request)
     aid = sess["account"]["id"]
     admin = sess["account"]["role"] == "admin"
     con = search.connect(INDEX, aid)
     try:
-        works, seeds = suggest.load(con, aid, admin)
+        works, seeds = suggest.load(con, aid, admin, taste.prefs(STATE, aid)["library_is_read"])
     finally:
         con.close()
     up = suggest.up_next(works, seeds)
@@ -993,6 +1071,7 @@ def api_suggestions(request: Request, refresh: int = 0):
         threading.Thread(target=_suggest_online, args=(aid, admin), daemon=True, name="suggest").start()
         refreshing = True
     sections = {"up_next": (up + cached.get("gaps", []))[:suggest.PER_SECTION], "library": lib,
+                "authors": cached.get("authors", []), "themes": cached.get("themes", []),
                 "screen": cached.get("screen", []), "worlds": cached.get("worlds", [])}
     return {"sections": [{"key": k, "title": SUGGEST_TITLES[k], "items": v} for k, v in sections.items() if v],
             "refreshing": refreshing or aid in _suggest_running,

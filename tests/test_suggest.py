@@ -58,6 +58,30 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_related_for_row", lambda row: [
         {"kind": "tv", "tmdb": 125988, "label": "Silo", "year": 2023, "authors": [], "url": "u", "wikidata": "Q1"}] if row["id"] == "wool" else [])
     main.cfg.save_connection("seerr", {"url": "http://seerr", "api_key": "k"})
+    # Open Library: subjects per book, an author's best-known works, books on a subject
+    from app import taste
+    monkeypatch.setattr(taste, "PAUSE", 0)
+    subjects = {"Wool": ["Dystopias", "Fiction, dystopian", "Totalitarianism"], "Shift": ["Dystopias", "Totalitarianism"],
+                "Dust": ["Dystopias", "Science fiction"], "Sand": ["Dystopias"], "Dune": ["Science fiction", "Messiahs"],
+                "Weeknight Dinners": ["Cooking"]}
+    def ol(path, params):
+        if "title" in params:
+            return {"docs": [{"title": params["title"], "author_name": [params.get("author") or "Someone"],
+                              "subject": subjects.get(params["title"], [])},
+                             {"title": params["title"], "author_name": ["Somebody Else"], "subject": ["Cooking"]}]}   # same title, other author
+        if params.get("author") == "Hugh Howey":
+            return {"docs": [{"title": "Beacon 23", "author_name": ["Hugh Howey"], "first_publish_year": 2015, "edition_count": 9,
+                              "subject": ["Science fiction", "Space"], "key": "/works/OL1W"},
+                             {"title": "Wool Omnibus", "author_name": ["Hugh Howey"], "first_publish_year": 2012, "edition_count": 30},
+                             {"title": "Wool", "author_name": ["Hugh Howey"], "first_publish_year": 2011, "edition_count": 40},
+                             {"title": "Machine Learning", "author_name": ["Hugh Howey"], "first_publish_year": 2030, "edition_count": 5}]}
+        if params.get("subject") in ("dystopias", "totalitarianism"):
+            return {"docs": [{"title": "Nineteen Eighty-Four", "author_name": ["George Orwell"], "first_publish_year": 1949, "edition_count": 900,
+                              "subject": ["Totalitarianism", "Dystopias"], "key": "/works/OL2W", "cover_i": 7},
+                             {"title": "Divergent", "author_name": ["Veronica Roth"], "first_publish_year": 2011, "edition_count": 200,
+                              "subject": ["Dystopias", "Chosen one"]}]}
+        return {"docs": []}
+    monkeypatch.setattr(taste, "_ol", ol)
     return main, admin, guest
 
 
@@ -79,6 +103,83 @@ def test_owner_suggestions_are_explained(env):
     assert [x["external"]["title"] for x in screen] == ["Interstellar"]   # owned Arrival filtered out
     assert screen[0]["reason"] == "Because of Arrival"
     assert [x["external"]["title"] for x in s["worlds"]] == ["Silo"] and s["worlds"][0]["reason"] == "From the world of Wool"
+
+
+def test_taste_library_is_read_authors_and_themes(env):
+    main, admin, guest = env
+    assert admin.post("/api/me/taste", json={"library_is_read": True, "more": "totalitarian", "less": "chosen one"}).json()["library_is_read"]
+    s = _sections(admin, main, 1)
+    assert "library" not in s                                           # everything owned now counts as read
+    authors = s["authors"]
+    assert [a["external"]["title"] for a in authors] == ["Beacon 23"]   # not owned Wool, not the omnibus, not unreleased
+    assert authors[0]["reason"].startswith("More from Hugh Howey: you have 4 of theirs")
+    themes = {t["external"]["title"]: t["reason"] for t in s["themes"]}
+    assert "Nineteen Eighty-Four" in themes and "Divergent" not in themes   # "less of: chosen one" drops it
+    assert themes["Nineteen Eighty-Four"].startswith("About dystopias, like") or themes["Nineteen Eighty-Four"].startswith("About totalitarianism, like")
+    assert "cooking" not in {t["term"] for t in admin.get("/api/me/taste").json()["profile"]["themes"]}   # one cookbook isn't a theme
+    me = admin.get("/api/me/taste").json()
+    assert me["more"] == "totalitarian" and me["profile"]["known"] >= 4
+    assert "authors" not in _sections(guest, main, 2)                   # guests: their own taste, nothing yet
+
+
+def test_taste_scoring_and_notes():
+    from app import taste
+    assert taste.clean(["Fiction, dystopian", "nyt:hardcover-fiction=2011", "Large type books", "Political fiction",
+                        "Accessible book", "Human-alien encounters", "Voyages dans le temps"]) == ["dystopia", "political", "first contact"]
+    assert taste.QUERY["first contact"] == "human-alien encounters"     # searched by Open Library's own name
+    seeds = {"a": (1.0, "Wool", ["dystopias", "space"]), "b": (1.0, "Silo", ["dystopias"]), "c": (1.0, "Dune", ["messiahs", "space", "dystopias"])}
+    lib = [ts for _, _, ts in seeds.values()] + [["cooking"]] * 3
+    prof = taste.profile(seeds, lib)
+    assert set(prof["weights"]) == {"dystopias", "space"}                # in at least two of yours
+    fit = taste.scorer(prof, {"more": "messiah", "less": "chosen one\nromance"})
+    assert fit(["dystopias"])[0] > fit(["space"])[0] > fit(["cooking"])[0] == 0
+    assert fit(["messiahs"])[0] > 0                                      # "more of" lifts it
+    assert fit(["Chosen One", "dystopias"]) is None and fit(["paranormal romance"]) is None
+    assert fit(["roman empire"]) is not None and fit(["romans"]) is not None   # "romance" doesn't catch Rome
+
+
+def test_open_library_outage_fails_fast(monkeypatch):
+    from app import taste
+    calls = []
+    class Down:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k):
+            calls.append(1)
+            raise taste.httpx.ConnectTimeout("down")
+    monkeypatch.setattr(taste.httpx, "Client", Down)
+    monkeypatch.setattr(taste, "PAUSE", 0)
+    monkeypatch.setattr(taste, "_ol_state", {"fails": 0, "down_until": 0.0})
+    import tempfile, os
+    state = os.path.join(tempfile.mkdtemp(), "s.db")
+    wanted = [(f"book:{i}", "book", f"Book {i}", ["A Writer"], None) for i in range(50)]
+    assert taste.fill(None, state, wanted, budget=50) == 0
+    assert len(calls) == 3                                               # three strikes, then it stops for a while
+
+
+def test_open_library_lookups_pick_the_right_book(tmp_path, monkeypatch):
+    from app import suggest, taste
+    monkeypatch.setattr(taste, "PAUSE", 0)
+    asked = []
+    def ol(path, params):
+        asked.append(params)
+        if params.get("subject"):
+            return {"docs": []}
+        return {"docs": [{"title": "The Lost Colony", "author_name": ["Eoin Colfer"], "subject": ["Fairies", "Leprechauns"]},
+                         {"title": "The Lost Colony: The Long Winter Trilogy", "author_name": ["A. G. Riddle"], "subject": ["Climate change"]}]}
+    monkeypatch.setattr(taste, "_ol", ol)
+    assert taste.fetch_book("The Lost Colony", ["A.G. Riddle"]) == ["climate change"]     # never another author's same-titled book
+    assert taste.short_title("Designated Targets: A Novel of the Axis of Time") == "Designated Targets"
+    assert taste.short_title("Lightning Thief, The") == "The Lightning Thief"
+    taste.subject_books(str(tmp_path / "s.db"), "first contact")
+    assert asked[-1]["subject"] == "human-alien encounters"                               # Open Library's own wording
+    works = {"x": {"id": "x", "kind": "book", "title": "Matter", "authors": json.dumps(["Iain M. Banks"])}}
+    books = [{"title": "Excession", "authors": ["Iain M. Banks"], "year": 1996, "editions": 40},
+             {"title": "Best of 1996", "authors": ["Gardner Dozois", "Iain M. Banks"], "year": 1996, "editions": 9},
+             {"title": "Mи", "authors": ["Iain M. Banks"], "year": 1999, "editions": 9}]
+    out = suggest.more_by_authors(works, {"x": 2.0}, lambda a: books, lambda it: None)
+    assert [o["external"]["title"] for o in out] == ["Excession"]                          # not someone else's anthology, English only
 
 
 def test_guests_get_their_own_suggestions(env):

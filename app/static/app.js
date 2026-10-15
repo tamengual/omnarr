@@ -1001,6 +1001,7 @@ function run() {
     if (!settingsController) {
       settingsController = new AbortController();
       loadMyAccount();
+      loadTaste();
       if (isAdmin()) { loadConnections(); loadAccounts(); loadInvites(); loadDevicesSettings(); }
     }
     return;
@@ -1294,6 +1295,46 @@ $("#my-account-form").addEventListener("submit", (event) => {
     await loadMyAccount();
     if (current()) connectionMessage($("#account-message"), result.message || "Account saved.", "success");
   });
+});
+
+function renderTasteThemes(profile) {
+  const themes = profile?.themes || [];
+  $("#taste-themes").innerHTML = themes.length
+    ? `<h3>What your library is about</h3><p class="hint">Worked out from ${Number(profile.known || 0).toLocaleString()} of your ${Number(profile.seeds || 0).toLocaleString()} titles so far${profile.known < profile.seeds ? " (the rest are looked up a batch at a time)" : ""}.</p><ul class="taste-themes">${themes.map((t) => `<li><strong>${esc(t.term)}</strong>${t.like?.length ? ` <span class="hint">like ${esc(t.like.join(", "))}</span>` : ""}</li>`).join("")}</ul>`
+    : '<p class="hint">Your themes appear here after “For you” has refreshed once.</p>';
+}
+
+async function loadTaste() {
+  const controller = settingsController;
+  if (!controller) return;
+  const form = $("#taste-form");
+  try {
+    const data = await api("api/me/taste", { signal: controller.signal, cache: "no-store" });
+    if (controller !== settingsController) return;
+    form.elements.library_is_read.checked = Boolean(data.library_is_read);
+    form.elements.more.value = data.more || "";
+    form.elements.less.value = data.less || "";
+    renderTasteThemes(data.profile);
+  } catch (error) {
+    if (controller !== settingsController) return;
+    connectionMessage($("#taste-message"), error.message, "error");
+  }
+}
+
+$("#taste-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = $("button[type=submit]", form);
+  button.disabled = true;
+  connectionMessage($("#taste-message"), "Saving…", "busy");
+  try {
+    await api("api/me/taste", { method: "POST", body: JSON.stringify({ library_is_read: form.elements.library_is_read.checked, more: form.elements.more.value, less: form.elements.less.value }) });
+    connectionMessage($("#taste-message"), "Saved. “For you” will be worked out again next time you open it.", "success");
+  } catch (error) {
+    connectionMessage($("#taste-message"), error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 });
 
 async function loadAccounts() {

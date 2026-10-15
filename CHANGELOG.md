@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.16 — 2026-10-14
+
+- **"For you" learns what your library is about.** Omnarr now looks up each book's subjects on Open Library and each movie and show's keywords on TMDB (through Seerr), once per title, and builds a profile from the themes that are unusually common in what you've read and watched ("first contact", "dystopia", "end of the world"), not just broad genres. Suggestions explain themselves with it: "Because of Arrival, and it's about first contact, like Children of Time and The Expanse".
+- **New: More from authors you collect.** Well-known books by the authors you read most that you don't have yet, ranked by your themes, ready to request.
+- **New: Stories about what you love.** Books on your strongest themes, by anyone. Newer and well-known books are preferred over much-reprinted old ones; other languages, box sets, study guides and unreleased books are left out.
+- **Movie and show picks** are re-ranked by your themes.
+- **Your taste (Settings → My account).** "My library is what I've read and watched" for people who read or watch on other apps: everything you own then counts as liked. "More of" and "Less of" notes in your own words lift or drop matching suggestions. The section also shows the themes Omnarr has found so far.
+- Open Library is asked gently (one request a second, a batch per refresh, so a large library fills in over a few refreshes), and when it's down Omnarr stops asking for 15 minutes instead of waiting on every request.
+
 ## 1.0.15 — 2026-10-14
 
 - **"Ready to watch" for movie and TV requests.** Omnarr now remembers who asked for each movie or show and tells that person (email, or your notification webhook) once it can actually be played in Jellyfin or Plex, not just when a file lands. Shows say when only the first episodes are in. The message links straight to the title (set your public address in Settings for the link). Members see their movie and TV requests in Activity → Requests, with a Watch button once they're ready. Requests that never turn up are dropped after 180 days.

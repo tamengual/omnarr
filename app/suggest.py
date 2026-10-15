@@ -57,8 +57,10 @@ def _rating_factor(stars):
     return -0.6                                   # disliked: steer away from its authors/genres
 
 
-def load(con, account_id, use_owner_ratings):
-    """Works (non-adult, visible) with this person's status, and their seeds with weights."""
+def load(con, account_id, use_owner_ratings, owned_is_read=False):
+    """Works (non-adult, visible) with this person's status, and their seeds with weights.
+    owned_is_read: the person says their library is what they've read and watched (they read on
+    other apps, so Omnarr's progress is mostly empty): every owned work counts as liked."""
     works = {}
     for r in con.execute(f"SELECT * FROM {con.works} WHERE adult=0 AND hidden=0 AND kind IN ({','.join('?' * len(KINDS))})", KINDS):
         works[r["id"]] = dict(r)
@@ -74,10 +76,15 @@ def load(con, account_id, use_owner_ratings):
             # An owner's screen library is things they've seen and liked enough to keep a copy
             # of: treat every owned movie/show as watched and liked.
             w["status"] = status = "finished"
+        owned_only = False
+        if owned_is_read and status == "unread" and not BUNDLE.search(w.get("title") or "") \
+                and not FOREIGN.search(w.get("title") or ""):
+            w["status"] = status = "finished"
+            owned_only = True
         if status not in ("finished", "in_progress"):
             continue
-        base = 1.0 if status == "finished" else 0.8
-        age = _age_days(w.get("last_activity"))
+        base = 0.7 if owned_only else (1.0 if status == "finished" else 0.8)
+        age = _age_days(w.get("last_activity") or (w.get("added") if owned_only else None))
         recency = 0.6 if age is None else 0.5 + 0.5 * math.exp(-age / 365)
         seeds[wid] = base * recency * _rating_factor(stars.get(wid))
     return works, seeds
@@ -183,10 +190,12 @@ def top_seeds(works, seeds, kinds, n):
                   key=lambda wid: -seeds[wid])[:n]
 
 
-def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_seeds=()):
+def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_seeds=(), theme=None):
     """Movies/shows recommended (TMDB, via Seerr) for screens you have or watched, and for the
     screen adaptations of books you loved. recs_for(kind, tmdb) -> [{kind, tmdb, title, year,
-    poster, status}]. owned_screens: [(work id, kind 'movie'|'tv', tmdb, weight)]."""
+    poster, status}]. owned_screens: [(work id, kind 'movie'|'tv', tmdb, weight)].
+    theme(rec) -> (score, why) | None re-ranks by what the person's library is about (None: a
+    'less of' note matched, so it's left out)."""
     tally = {}
     for wid, kind, tmdb, weight, label in list(owned_screens) + list(extra_seeds):
         for rec in recs_for(kind, tmdb) or []:
@@ -196,13 +205,22 @@ def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_see
             t = tally.setdefault(k, {"item": rec, "score": 0.0, "because": []})
             t["score"] += weight
             t["because"].append((weight, label))
+    if theme:
+        for k in list(tally):
+            got = theme(tally[k]["item"])
+            if got is None:
+                del tally[k]                       # "less of" this
+                continue
+            tally[k]["score"] *= 1 + got[0]        # up to ~2.6x for a strong theme match
+            tally[k]["why"] = got[1] if got[0] >= 0.35 else ""
     out, credited = [], Counter()
     for t in sorted(tally.values(), key=lambda t: -t["score"]):
         label = max(t["because"])[1]
         if credited[label] >= PER_SEED:
             continue
         credited[label] += 1
-        out.append({"external": t["item"], "reason": f"Because of {label}", "score": round(t["score"], 3)})
+        reason = f"Because of {label}" + (f", and it's {t['why']}" if t.get("why") else "")
+        out.append({"external": t["item"], "reason": reason, "score": round(t["score"], 3)})
         if len(out) >= PER_SECTION:
             break
     return out
@@ -236,6 +254,98 @@ def worlds(works, seeds, related_for, match_library, n_seeds=12, skip_tmdb=()):
             if len(out) >= PER_SECTION:
                 return out
     return out
+
+
+JUNK = re.compile(r"\b(summary|study guide|sparknotes|cliffs?notes|analysis of|workbook|sampler|excerpt|coloring|calendar|"
+                  r"companion|guide to|reader'?s guide|unofficial|quiz|trivia)\b", re.I)
+
+
+NOT_ENGLISH = re.compile(r"[^\x00-ɏ‘-‟]|\b(le|la|las|los|del|des|der|die|und|une|historia)\b", re.I)
+
+
+def _book_ok(it, owned):
+    t = it.get("title") or ""
+    return bool(t) and not owned and it.get("year") and it["year"] <= THIS_YEAR and (it.get("editions") or 0) >= 3 \
+        and not BUNDLE.search(t) and not FOREIGN.search(t) and not JUNK.search(t) and not NOT_ENGLISH.search(t)
+
+
+def _fame(it):
+    """Well-known, but not just 'reprinted for 150 years': newer books get a nudge."""
+    y = it.get("year") or 0
+    return math.log10(1 + (it.get("editions") or 0)) / 3 + (0.5 if y >= 1990 else 0.25 if y >= 1960 else 0)
+
+
+def _book_external(it, reason, score):
+    return {"external": {"kind": "book", "title": it["title"], "year": it.get("year"), "authors": it.get("authors") or [],
+                         "url": it.get("url") or "", "status": "not_requested", "poster": it.get("poster") or ""},
+            "reason": reason, "score": round(score, 3)}
+
+
+def author_weights(works, seeds):
+    """{author (as written): (summed weight, how many of theirs)} for books/comics you've read."""
+    tot, n, name = Counter(), Counter(), {}
+    for wid, wt in seeds.items():
+        w = works[wid]
+        if w["kind"] not in ("book", "comic") or wt <= 0:
+            continue
+        a = (json.loads(w.get("authors") or "[]") or [""])[0].strip()
+        if not a or a.lower() in ("unknown", "various", "anonymous"):
+            continue
+        key = normalize.surname(a) + "|" + a.lower()[:1]
+        tot[key] += wt
+        n[key] += 1
+        name.setdefault(key, a)
+    return {name[k]: (tot[k], n[k]) for k in tot}
+
+
+def more_by_authors(works, seeds, author_books, match_library, theme=None, n_authors=12, per_author=2):
+    """Well-known books by the authors you read most that you don't have yet.
+    author_books(author) -> [{title, authors, year, editions, terms, url, poster}]."""
+    top = sorted(author_weights(works, seeds).items(), key=lambda x: -x[1][0])[:n_authors]
+    out = []
+    for author, (weight, have) in top:
+        sur = normalize.surname(author)
+        picks = []
+        for it in author_books(author) or []:
+            if not it.get("authors") or normalize.surname(it["authors"][0]) != sur:
+                continue                               # their name on someone else's anthology
+            if not _book_ok(it, match_library({"kind": "book", "label": it["title"], "authors": it["authors"]})):
+                continue
+            got = theme(it.get("terms")) if theme else (0.0, "")
+            if got is None:
+                continue
+            score = (1 - math.exp(-weight / 2)) * 3 + got[0] + math.log10(1 + it["editions"]) / 4
+            reason = f"More from {author}: you have {have} of theirs" + (f", and it's {got[1]}" if got[0] >= 0.35 and got[1] else "")
+            picks.append(_book_external(it, reason, score))
+        picks.sort(key=lambda c: -c["score"])
+        out += picks[:per_author]
+    out.sort(key=lambda c: -c["score"])
+    return out[:PER_SECTION]
+
+
+def theme_picks(prof, subject_books, match_library, theme, skip_titles=(), n_terms=6, per_term=3):
+    """Books about the things your library is most about (Open Library subjects), not by your
+    usual authors necessarily. prof: taste.profile(); subject_books(term) -> [book items]."""
+    from .taste import GENERIC
+    weights, examples = prof.get("weights") or {}, prof.get("examples") or {}
+    seen = {normalize.key(t) for t in skip_titles}
+    out = []
+    for term in [t for t in sorted(weights, key=lambda t: -weights[t]) if t not in GENERIC][:n_terms]:
+        cands = []
+        for it in subject_books(term) or []:
+            k = normalize.key(it.get("title") or "")
+            if k in seen or not _book_ok(it, match_library({"kind": "book", "label": it.get("title") or "", "authors": it.get("authors") or []})):
+                continue
+            got = theme(list(it.get("terms") or []) + [term])
+            if got is not None:
+                cands.append((got[0] + _fame(it), k, it))
+        ex = examples.get(term) or []
+        for score, k, it in sorted(cands, key=lambda c: -c[0])[:per_term]:
+            seen.add(k)
+            out.append(_book_external(it, f"About {term}" + (f", like {' and '.join(ex[:2])}" if ex else ""),
+                                      weights[term] + score))
+    out.sort(key=lambda c: -c["score"])
+    return out[:PER_SECTION]
 
 
 def series_gaps(works, seeds, related_for, match_library, n_series=6):

@@ -216,6 +216,18 @@
             <p id="account-message" class="connection-message" role="status" aria-live="polite"></p>
             <section id="offline-account" hidden aria-label="Saved for offline"></section>
           </section>
+          <section class="settings-options" aria-labelledby="taste-title">
+            <h2 id="taste-title">Your taste</h2>
+            <p class="hint">Shapes “For you”. Omnarr learns what your books, movies and shows are about (their subjects and themes), and leans on what you tell it here.</p>
+            <form id="taste-form" class="password-form">
+              <label class="check"><input name="library_is_read" type="checkbox"><span>My library is what I’ve read and watched (I read or watch elsewhere, so treat everything here as something I liked)</span></label>
+              <label class="field">More of<textarea name="more" rows="3" placeholder="One idea per line, e.g. corrupt institutions, myth retellings"></textarea></label>
+              <label class="field">Less of<textarea name="less" rows="2" placeholder="e.g. chosen one, romance-first"></textarea></label>
+              <div class="connection-actions"><button class="primary-button" type="submit">Save taste</button></div>
+            </form>
+            <p id="taste-message" class="connection-message" role="status" aria-live="polite"></p>
+            <div id="taste-themes"></div>
+          </section>
           <section class="settings-options" aria-labelledby="settings-password-title">
             <h2 id="settings-password-title" class="check">Password</h2>
             <p id="settings-password-help" class="hint">The password for signing in to Omnarr directly.</p>
