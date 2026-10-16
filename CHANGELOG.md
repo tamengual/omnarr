@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.18 — 2026-10-16
+
+- **Better "For you" on real libraries.** A series or film franchise now counts as one taste, and only the themes most of its books share count: sixteen Wheel of Time novels no longer outvote everything else, and reasons name the series ("about dystopia, like The Hunger Games and Red Rising"). Reasons never lead with a broad shelf like "fantasy".
+- Movie & TV picks start from one title per franchise, more of them, in a different mix each day, and credit at most two picks to one title.
+- Box sets, trilogies, "(series) 1-4", screenplays, companion books and other countries' titles of books you own (Philosopher's Stone / Sorcerer's Stone) are left out; "Stories about…" skips books from before 1900. More bookkeeping labels from Open Library and TMDB are ignored.
+- Taste notes match short words too ("end of the world" no longer matches anything about the world).
+
 ## 1.0.17 — 2026-10-16
 
 - **One search for everything you can request.** "Not in your library?" now has a single button that searches books and movies & TV together and shows both. Before, there were two buttons and it was easy to search only movies.

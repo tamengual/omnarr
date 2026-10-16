@@ -115,7 +115,8 @@ def test_taste_library_is_read_authors_and_themes(env):
     assert authors[0]["reason"].startswith("More from Hugh Howey: you have 4 of theirs")
     themes = {t["external"]["title"]: t["reason"] for t in s["themes"]}
     assert "Nineteen Eighty-Four" in themes and "Divergent" not in themes   # "less of: chosen one" drops it
-    assert themes["Nineteen Eighty-Four"].startswith("About dystopias, like") or themes["Nineteen Eighty-Four"].startswith("About totalitarianism, like")
+    assert themes["Nineteen Eighty-Four"].startswith(("About dystopia, like", "About totalitarianism, like"))
+    assert "Silo" in themes["Nineteen Eighty-Four"]                      # a series is one example, by its name
     assert "cooking" not in {t["term"] for t in admin.get("/api/me/taste").json()["profile"]["themes"]}   # one cookbook isn't a theme
     me = admin.get("/api/me/taste").json()
     assert me["more"] == "totalitarian" and me["profile"]["known"] >= 4

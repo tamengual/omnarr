@@ -939,8 +939,18 @@ def _related_for_row(row):
     return _related_items(w)
 
 
-def _owned_screens(works, seeds, limit=15):
-    """[(work id, 'movie'|'tv', tmdb, weight, title)] for the best screen seeds with a TMDB id."""
+def _franchise(w):
+    """'The Lord of the Rings: The Two Towers' and '…: The Return of the King' -> one franchise."""
+    if w.get("universe"):
+        return "u:" + w["universe"]
+    words = [x for x in normalize.key(re.split(r"[:\-–(]", w.get("title") or "")[0]).split() if x not in ("the", "a", "an")]
+    return "t:" + " ".join(words[:3])
+
+
+def _owned_screens(works, seeds, limit=25):
+    """[(work id, 'movie'|'tv', tmdb, weight, title)]: one title per franchise (six Tolkien films
+    shouldn't decide every pick), the best-liked first, with a different mix each day."""
+    import random
     con = search.connect(INDEX)
     try:
         tmdb = {wid_: str(t) for wid_, t in con.execute(
@@ -949,9 +959,15 @@ def _owned_screens(works, seeds, limit=15):
         con.close()
     rows = [(wid_, "tv" if works[wid_]["kind"] == "show" else "movie", tmdb[wid_], wt, works[wid_]["title"])
             for wid_, wt in seeds.items() if works[wid_]["kind"] in ("movie", "show") and wid_ in tmdb and wt > 0]
-    rows.sort(key=lambda r: works[r[0]].get("added") or "", reverse=True)   # newest first…
-    rows.sort(key=lambda r: -r[3])                                            # …within equal weight
-    return rows[:limit]
+    rng = random.Random(int(time.time() // 86400))
+    rows.sort(key=lambda r: -(r[3] * rng.uniform(0.7, 1.3)))
+    out, seen = [], set()
+    for r in rows:
+        f = _franchise(works[r[0]])
+        if f not in seen:
+            seen.add(f)
+            out.append(r)
+    return out[:limit]
 
 
 TASTE_BUDGET = 200          # Open Library subject lookups per refresh (one a second), so a big library fills in over a few runs
@@ -971,23 +987,42 @@ def _taste(works, seeds, prefs):
         if w["kind"] in ("movie", "show"):
             return taste.screen_key(w["kind"], tmdb[w["id"]]) if w["id"] in tmdb else None
         return taste.book_key(w["title"], json.loads(w.get("authors") or "[]"))
-    wanted = []
+    # A series (or film franchise) is one taste, not one per book: sixteen Wheel of Time novels
+    # shouldn't outvote everything else. Look-ups go one per series first, so variety arrives early.
+    def group(w):
+        if w["kind"] in ("movie", "show"):
+            return _franchise(w)
+        return "s:" + w["series_key"] if w.get("series_key") else "w:" + w["id"]
+    wanted, firsts, rest, seen_g = [], [], [], set()
     for wid_ in sorted(seeds, key=lambda x: -seeds[x]):
         w = works[wid_]
         k = key(w)
         if k and (w["kind"] in ("book", "comic") or cfg.source("seerr")):
-            wanted.append((k, w["kind"], w["title"], json.loads(w.get("authors") or "[]"), tmdb.get(wid_)))
-    taste.fill(cfg, STATE, wanted, budget=TASTE_BUDGET)
-    seed_terms, library_terms = {}, []
+            item = (k, w["kind"], w["title"], json.loads(w.get("authors") or "[]"), tmdb.get(wid_))
+            (rest if group(w) in seen_g else firsts).append(item)
+            seen_g.add(group(w))
+    taste.fill(cfg, STATE, firsts + rest, budget=TASTE_BUDGET)
+    groups = {}                                   # group -> [weight, title, Counter(terms), in seeds, members]
+    from collections import Counter
     for wid_, w in works.items():
         k = key(w)
         ts = taste.terms(STATE, k) if k else None
-        if ts:
-            library_terms.append(ts)
-            if wid_ in seeds and seeds[wid_] > 0:
-                seed_terms[wid_] = (seeds[wid_], w["title"], ts)
+        if not ts:
+            continue
+        g = groups.setdefault(group(w), [0.0, w["title"], Counter(), False, 0])
+        g[2].update(set(ts))
+        g[4] += 1
+        if wid_ in seeds and seeds[wid_] > g[0]:
+            g[0], g[1], g[3] = seeds[wid_], (w.get("series") or w["title"]) if w["kind"] in ("book", "comic") else w["title"], True
+
+    def core(g):                                  # what a series is about: terms most of its books share
+        need = 1 if g[4] <= 2 else max(2, round(0.4 * g[4]))
+        return sorted(t for t, n in g[2].items() if n >= need)
+    library_terms = [core(g) for g in groups.values()]
+    seed_terms = {gk: (g[0], g[1], core(g)) for gk, g in groups.items() if g[3] and g[0] > 0}
+    known = sum(1 for wid_ in seeds if key(works[wid_]) and taste.terms(STATE, key(works[wid_])))
     prof = taste.profile(seed_terms, library_terms)
-    return prof, taste.scorer(prof, prefs), len(seed_terms)
+    return prof, taste.scorer(prof, prefs), known
 
 
 def _suggest_online(aid, admin):
@@ -1012,7 +1047,7 @@ def _suggest_online(aid, admin):
                 taste.fill(cfg, STATE, [(taste.screen_key(r["kind"], r["tmdb"]), r["kind"], r.get("title") or "", [], r["tmdb"])
                                         for r in seen[:150]], budget=150)
             screen_fit = lambda rec: fit(taste.terms(STATE, taste.screen_key(rec["kind"], rec["tmdb"])) or [])
-            screen = suggest.screen_picks(works, seeds, recs, match, _owned_screens(works, seeds), theme=screen_fit)
+            screen = suggest.screen_picks(works, seeds, recs, match, _owned_screens(works, seeds), theme=screen_fit, per_seed=2)
             authors = suggest.more_by_authors(works, seeds, lambda a: taste.author_books(STATE, a), match, fit)
             themes = suggest.theme_picks(prof, lambda t: taste.subject_books(STATE, t), match, fit,
                                          skip_titles=[a["external"]["title"] for a in authors])

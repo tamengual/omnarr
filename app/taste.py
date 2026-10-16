@@ -53,9 +53,13 @@ NOISE = re.compile("^(" + "|".join((
     r"(\w+ )?literature", r"action (&|and) adventure", r"interpersonal relations", r"historical", r"history", r"biography",
     r"(\w+ )?language materials?", r"spanish language.*", r"comics.*graphic novels", r"thrillers? \(fiction\)", r"suspense",
     r"man-woman relationships", r"good and evil", r"fiction.*general", r"general.*fiction", r"united states",
-    r"children", r"magie", r"etc\..*", r"collections?", r"anthologies", r"short stories")) + ")$", re.I)
+    r"children", r"magie", r"etc\..*", r"collections?", r"anthologies", r"short stories", r"open library.*",
+    r"staff picks?", r".*\bpicks?\b", r"animals?", r"sci-fi (&|and) fantasy", r"action (&|and) adventure", r"war (&|and) politics",
+    r"kids", r"family", r"reality", r"talk", r"news", r"soap", r"documentary", r"tv movie", r"non-?fiction",
+    r"(\w+ )?studies", r"essays?", r"textbooks?", r"study and teaching.*", r"examinations?.*")) + ")$", re.I)
 # Subjects in other languages ("voyages dans le temps", "pour la jeunesse")
-FOREIGN_WORDS = re.compile(r"\b(pour|dans|les|des|la|le|du|et|el|los|las|del|und|der|die|das|jeunesse|romans?)\b|[éèêàçñüöäß]", re.I)
+FOREIGN_WORDS = re.compile(r"\b(pour|dans|les|des|la|le|du|et|el|los|las|del|und|der|die|das|jeunesse|romans?)\b|[éèêàçñüöäß]|"
+                           r"(isch|ische|isches|ischer|englisch|deutsch|literatur|erz[aä]hlung|ficcion|ficção|narrativa)\b", re.I)
 # One idea, one name: "fantasy fiction" = "fantasy", "dystopias" = "dystopian" = "dystopia"
 CANON = {"dystopias": "dystopia", "dystopian": "dystopia", "dystopian fiction": "dystopia", "utopias": "utopia",
          "fantasy fiction": "fantasy", "fantasy & magic": "fantasy", "magic": "magic", "science-fiction": "science fiction",
@@ -69,7 +73,9 @@ for _raw, _canon in CANON.items():
     QUERY.setdefault(_canon, _raw)
 # Shelves, not themes: still count when scoring, but "Stories about…" never leads with them
 GENERIC = {"science fiction", "fantasy", "adventure", "romance", "thriller", "mystery", "horror", "humor", "drama",
-           "action", "comedy", "war", "politics and government", "social conditions"}
+           "action", "comedy", "war", "politics and government", "social conditions", "epic", "epic fantasy", "magic",
+           "family", "animation", "crime", "history", "fiction", "literary", "classics", "imaginary places",
+           "heroes", "good and evil", "friendship", "kings and rulers", "quests", "wizards", "magicians"}
 
 
 def _con(state_path):
@@ -101,14 +107,15 @@ def set_prefs(state_path, account_id, library_is_read=None, more=None, less=None
     return new
 
 
-STOP = {"about", "with", "stories", "story", "books", "more", "less", "that", "where", "when", "from", "like", "very"}
+STOP = {"about", "with", "stories", "story", "books", "more", "less", "that", "where", "when", "from", "like", "very",
+        "the", "and", "for", "who", "its", "his", "her", "any", "all", "not", "but"}
 
 
 def notes(text):
     """'dystopia, political corruption\\nchosen one' -> [['dystopia'], ['political', 'corruption'], ['chosen']]."""
     out = []
     for phrase in re.split(r"[\n,;]+", text or ""):
-        words = [w for w in re.findall(r"[a-z]+", phrase.lower()) if len(w) >= 4 and w not in STOP]
+        words = [w for w in re.findall(r"[a-z]+", phrase.lower()) if len(w) >= 3 and w not in STOP]
         if words:
             out.append(words)
     return out
@@ -136,6 +143,8 @@ def clean(raw):
             t = re.sub(r"\s+", " ", part.strip().strip(".")).lower()
             t = re.sub(r"^fiction ", "", t)
             t = re.sub(r" (stories|tales)$", "", t)
+            t = re.sub(r"^(american|english|british|canadian|australian|irish|scottish) (?=.*\b(fiction|literature|science fiction|fantasy)\b)", "", t)
+            t = re.sub(r"^epic fiction$", "epic", t)
             t = CANON.get(t, t)
             if 3 <= len(t) <= 40 and not NOISE.match(t) and not FOREIGN_WORDS.search(t) \
                     and not re.search(r"[=:()\[\]]", t) and t not in out:
@@ -242,11 +251,13 @@ SCREEN_NOISE = re.compile(r"^(based on .*|duringcreditsstinger|aftercreditssting
 
 
 def terms(state_path, key):
+    """Cached terms, cleaned again on the way out (so better cleaning applies to old look-ups too)."""
     con = _con(state_path)
     try:
-        return _cached(con, "taste_terms", key, CACHE_DAYS)
+        hit = _cached(con, "taste_terms", key, CACHE_DAYS)
     finally:
         con.close()
+    return clean(hit) if hit else hit
 
 
 def fill(cfg, state_path, wanted, budget=120):
@@ -369,11 +380,12 @@ def scorer(prof, prefs_):
         base = min(1.0, sum(w for w, _ in hits) / norm)
         liked = _hits(more, ts) if more else []
         why = ""
-        if hits:
-            t = hits[0][1]
+        specific = [t for _, t in hits if t not in GENERIC]
+        if specific:                               # "about first contact", never just "about fantasy"
+            t = specific[0]
             ex = prof["examples"].get(t) or []
             why = f"about {t}" + (f", like {' and '.join(ex[:2])}" if ex else "")
         elif liked:
-            why = "matches what you said you want more of"
+            why = "the kind of thing you asked for more of"
         return base + 0.6 * min(1, len(liked)), why
     return fn

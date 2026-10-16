@@ -190,7 +190,7 @@ def top_seeds(works, seeds, kinds, n):
                   key=lambda wid: -seeds[wid])[:n]
 
 
-def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_seeds=(), theme=None):
+def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_seeds=(), theme=None, per_seed=PER_SEED):
     """Movies/shows recommended (TMDB, via Seerr) for screens you have or watched, and for the
     screen adaptations of books you loved. recs_for(kind, tmdb) -> [{kind, tmdb, title, year,
     poster, status}]. owned_screens: [(work id, kind 'movie'|'tv', tmdb, weight)].
@@ -216,7 +216,7 @@ def screen_picks(works, seeds, recs_for, match_library, owned_screens, extra_see
     out, credited = [], Counter()
     for t in sorted(tally.values(), key=lambda t: -t["score"]):
         label = max(t["because"])[1]
-        if credited[label] >= PER_SEED:
+        if credited[label] >= per_seed:
             continue
         credited[label] += 1
         reason = f"Because of {label}" + (f", and it's {t['why']}" if t.get("why") else "")
@@ -257,16 +257,34 @@ def worlds(works, seeds, related_for, match_library, n_seeds=12, skip_tmdb=()):
 
 
 JUNK = re.compile(r"\b(summary|study guide|sparknotes|cliffs?notes|analysis of|workbook|sampler|excerpt|coloring|calendar|"
-                  r"companion|guide to|reader'?s guide|unofficial|quiz|trivia)\b", re.I)
+                  r"companion|guide to|reader'?s guide|unofficial|quiz|trivia|screenplay|script|the art of|making of)\b"
+                  r"|^the (world|worlds|science|history|philosophy|maps) of\b", re.I)
+# The same book under another country's title, so owning one means you have the other
+ALSO_KNOWN = {"harry potter and the philosopher's stone": "Harry Potter and the Sorcerer's Stone",
+              "northern lights": "The Golden Compass", "the golden compass": "Northern Lights"}
 
 
 NOT_ENGLISH = re.compile(r"[^\x00-ɏ‘-‟]|\b(le|la|las|los|del|des|der|die|und|une|historia)\b", re.I)
 
 
+def _owned_book(match_library, it):
+    item = {"kind": "book", "label": it.get("title") or "", "authors": it.get("authors") or []}
+    if match_library(item):
+        return True
+    other = ALSO_KNOWN.get((it.get("title") or "").lower())
+    return bool(other and match_library({**item, "label": other}))
+
+
 def _book_ok(it, owned):
     t = it.get("title") or ""
     return bool(t) and not owned and it.get("year") and it["year"] <= THIS_YEAR and (it.get("editions") or 0) >= 3 \
-        and not BUNDLE.search(t) and not FOREIGN.search(t) and not JUNK.search(t) and not NOT_ENGLISH.search(t)
+        and not BUNDLE.search(t) and not SETS.search(t) and not FOREIGN.search(t) and not JUNK.search(t) \
+        and not NOT_ENGLISH.search(t)
+
+
+# Sets of books you'd already have one by one ("The Foundation Trilogy", "Harry Potter (series) 1-4",
+# "Hunger Games / Catching Fire / Mockingjay")
+SETS = re.compile(r"\b(trilogy|quartet|duology|quintet|tetralogy)\b|\(series\)|\bseries\b\s*\d|\s/\s|\b\d\s*-\s*\d\b", re.I)
 
 
 def _fame(it):
@@ -309,7 +327,7 @@ def more_by_authors(works, seeds, author_books, match_library, theme=None, n_aut
         for it in author_books(author) or []:
             if not it.get("authors") or normalize.surname(it["authors"][0]) != sur:
                 continue                               # their name on someone else's anthology
-            if not _book_ok(it, match_library({"kind": "book", "label": it["title"], "authors": it["authors"]})):
+            if not _book_ok(it, _owned_book(match_library, it)):
                 continue
             got = theme(it.get("terms")) if theme else (0.0, "")
             if got is None:
@@ -334,7 +352,7 @@ def theme_picks(prof, subject_books, match_library, theme, skip_titles=(), n_ter
         cands = []
         for it in subject_books(term) or []:
             k = normalize.key(it.get("title") or "")
-            if k in seen or not _book_ok(it, match_library({"kind": "book", "label": it.get("title") or "", "authors": it.get("authors") or []})):
+            if k in seen or (it.get("year") or 0) < 1900 or not _book_ok(it, _owned_book(match_library, it)):
                 continue
             got = theme(list(it.get("terms") or []) + [term])
             if got is not None:
