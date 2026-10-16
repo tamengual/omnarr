@@ -64,7 +64,7 @@ def env(tmp_path, monkeypatch):
     subjects = {"Wool": ["Dystopias", "Fiction, dystopian", "Totalitarianism"], "Shift": ["Dystopias", "Totalitarianism"],
                 "Dust": ["Dystopias", "Science fiction"], "Sand": ["Dystopias"], "Dune": ["Science fiction", "Messiahs"],
                 "Weeknight Dinners": ["Cooking"]}
-    def ol(path, params):
+    def ol(path, params, timeout=15):
         if "title" in params:
             return {"docs": [{"title": params["title"], "author_name": [params.get("author") or "Someone"],
                               "subject": subjects.get(params["title"], [])},
@@ -162,7 +162,7 @@ def test_open_library_lookups_pick_the_right_book(tmp_path, monkeypatch):
     from app import suggest, taste
     monkeypatch.setattr(taste, "PAUSE", 0)
     asked = []
-    def ol(path, params):
+    def ol(path, params, timeout=15):
         asked.append(params)
         if params.get("subject"):
             return {"docs": []}

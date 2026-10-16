@@ -1934,7 +1934,19 @@ def api_book_search(q: str):
         cands = requests_.book_candidates(cfg, q, wanted.shelfmark_type("ebook"))
     except Exception as e:
         raise HTTPException(502, f"Shelfmark: {e}")
-    for c in cands:
+    # Shelfmark matches titles, so "Stephen King" finds books *about* him. If the search is an
+    # author (one in your library, even misspelled, or a well-known one), list their books first.
+    author, corrected, by_author = _book_search_author(q), False, []
+    if author:
+        corrected = normalize.key(author["name"]) != normalize.key(q)
+        from . import suggest, taste
+        for it in taste.author_works(STATE, author["key"]):
+            if it.get("year") and it["year"] <= suggest.THIS_YEAR and not suggest.BUNDLE.search(it["title"]) \
+                    and not suggest.JUNK.search(it["title"]) and not suggest.NOT_ENGLISH.search(it["title"]):
+                by_author.append({"title": it["title"], "authors": [author["name"]], "year": it["year"], "cover": it.get("poster")})
+    wants_set = re.search(r"\b(box|set|collection|omnibus|bundle)\b", q, re.I)
+    singles = sorted(cands, key=lambda c: 0 if wants_set or not suggest_bundle(c.get("title") or "") else 1)
+    for c in by_author + singles:
         title = (c.get("title") or "").strip()
         authors = c.get("authors") or []
         key = (normalize.key(title), normalize.surname(authors[0]) if authors else "")
@@ -1948,9 +1960,52 @@ def api_book_search(q: str):
         if owned:
             item.update(status="available", in_library=owned)
         out.append(item)
-        if len(out) == 10:
+        if len(out) == (24 if author else 10):
             break
-    return {"results": out, "enabled": True, "manual_pick": True}
+    if author:                                     # the ones you don't have yet first
+        out.sort(key=lambda it: it["status"] == "available")
+    return {"results": out, "enabled": True, "manual_pick": True,
+            "author": author["name"] if author else "", "corrected": corrected}
+
+
+def _library_authors():
+    try:
+        con = search.connect(INDEX)
+        try:
+            return {a.strip() for (authors,) in con.execute("SELECT authors FROM works WHERE kind IN ('book','comic') AND hidden=0")
+                    for a in json.loads(authors or "[]") if a.strip()}
+        finally:
+            con.close()
+    except sqlite3.Error:                          # index not built yet
+        return set()
+
+
+def suggest_bundle(title):
+    from . import suggest
+    return bool(suggest.BUNDLE.search(title) or re.search(r" / ", title))
+
+
+def _book_search_author(q):
+    """{name, key} when a book search looks like an author: closest to one in your library (so
+    'Steven King' finds your Stephen King), else a well-known author with that name."""
+    import difflib
+    from . import taste
+    words = q.split()
+    if not 1 <= len(words) <= 4:
+        return None
+    names = _library_authors()
+    ql = q.lower().strip()
+    best, score = None, 0.0
+    for n in names:
+        r = difflib.SequenceMatcher(None, n.lower(), ql).ratio()
+        if len(words) == 1 and normalize.surname(n) == ql:
+            r = max(r, 0.95)                       # "Atwood"
+        if r > score:
+            best, score = n, r
+    name = best if score >= 0.85 else (q if len(words) >= 2 else None)
+    if not name:
+        return None
+    return taste.find_author(STATE, name, min_works=3 if best and score >= 0.85 else 10)
 
 
 @app.get("/api/devices")

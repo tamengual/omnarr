@@ -2286,7 +2286,7 @@ function renderRequestSearch() {
     $("#results-view").append(section);
     return;
   }
-  section.innerHTML = '<div class="request-search-heading"><h2>Not in your library?</h2><div class="request-search-actions"><button class="secondary-button" type="button" data-screen-search>Search movies &amp; TV to request</button><button class="secondary-button" type="button" data-book-search>Search books &amp; comics to request</button><button class="secondary-button" type="button" data-game-toggle aria-expanded="false" aria-controls="search-game-request">Request a game</button></div></div><div class="game-request" id="search-game-request" hidden><h3>Request a game</h3><div data-game-form></div></div><p class="hint" data-message aria-live="polite" aria-atomic="true"></p><div class="request-grid"></div>';
+  section.innerHTML = '<div class="request-search-heading"><h2>Not in your library?</h2><div class="request-search-actions"><button class="primary-button" type="button" data-request-search>Search books, movies &amp; TV to request</button><button class="secondary-button" type="button" data-game-toggle aria-expanded="false" aria-controls="search-game-request">Request a game</button></div></div><div class="game-request" id="search-game-request" hidden><h3>Request a game</h3><div data-game-form></div></div><p class="hint" data-message aria-live="polite" aria-atomic="true"></p><h3 data-books-heading hidden>Books &amp; comics</h3><div class="request-grid" data-books></div><h3 data-screens-heading hidden>Movies &amp; TV</h3><div class="request-grid" data-screens></div>';
   $("#results-view").append(section);
   const gameRequest = $("#search-game-request", section);
   renderGameRequest($("[data-game-form]", gameRequest), query, { editable: true });
@@ -2297,46 +2297,44 @@ function renderRequestSearch() {
     gameToggle.setAttribute("aria-expanded", String(!gameRequest.hidden));
     if (!gameRequest.hidden) $("input", gameRequest).focus();
   });
-  const button = $("[data-screen-search]", section);
+  // One search for everything you can request: books (title or author) and movies & TV, side by side.
+  const button = $("[data-request-search]", section);
   const message = $("[data-message]", section);
   button.addEventListener("click", async () => {
     button.disabled = true;
-    message.textContent = "Searching movies & TV…";
-    try {
-      const data = await api(`api/request/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal });
-      if (controller.signal.aborted || !section.isConnected) return;
-      const results = data.results || [];
-      renderRequestCards($(".request-grid", section), results, true, true);
-      message.textContent = results.length ? `${results.length} titles found for “${query}”.` : `No movies or TV found for “${query}”.`;
-    } catch (error) {
-      if (controller.signal.aborted || !section.isConnected) return;
-      message.textContent = error.message === "login" ? "Sign in to search for requests." : error.message;
-    } finally {
-      button.disabled = false;
+    message.textContent = `Searching books, movies & TV for “${query}”…`;
+    const q = new URLSearchParams({ q: query });
+    const [books, screens] = await Promise.allSettled([
+      api(`api/request/book/search?${q}`, { signal: controller.signal }),
+      api(`api/request/search?${q}`, { signal: controller.signal }),
+    ]);
+    button.disabled = false;
+    if (controller.signal.aborted || !section.isConnected) return;
+    const notes = [];
+    const show = (key, heading, results) => {
+      $(`[data-${key}-heading]`, section).hidden = !results.length;
+      renderRequestCards($(`[data-${key}]`, section), results, true, true);
+    };
+    if (books.status === "fulfilled" && books.value.enabled !== false) {
+      manualPick = books.value.manual_pick !== false;
+      const results = books.value.results || [];
+      $("[data-books-heading]", section).textContent = books.value.author ? `Books by ${books.value.author}` : "Books & comics";
+      show("books", "Books & comics", results);
+      if (books.value.corrected) notes.push(`Showing ${books.value.author}, the closest author to “${query}” in your library.`);
+      notes.push(results.length ? `${results.length} book${results.length === 1 ? "" : "s"}` : "no books");
+    } else {
+      show("books", "", []);
+      if (books.status === "rejected") notes.push(books.reason.message === "login" ? "Sign in to search for requests." : `Book search failed: ${books.reason.message}`);
     }
-  });
-  const bookButton = $("[data-book-search]", section);
-  bookButton.addEventListener("click", async () => {
-    bookButton.disabled = true;
-    message.textContent = "Searching books & comics…";
-    try {
-      const data = await api(`api/request/book/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal });
-      if (controller.signal.aborted || !section.isConnected) return;
-      if (!data.enabled) {
-        $(".request-grid", section).replaceChildren();
-        message.textContent = "Book requests aren't set up on this server yet.";
-        return;
-      }
-      manualPick = data.manual_pick !== false;
-      const results = data.results || [];
-      renderRequestCards($(".request-grid", section), results, true, true);
-      message.textContent = results.length ? `${results.length} books and comics found for “${query}”.` : `No books or comics found for “${query}”.`;
-    } catch (error) {
-      if (controller.signal.aborted || !section.isConnected) return;
-      message.textContent = error.message === "login" ? "Sign in to search for requests." : error.message;
-    } finally {
-      bookButton.disabled = false;
+    if (screens.status === "fulfilled") {
+      const results = screens.value.results || [];
+      show("screens", "Movies & TV", results);
+      notes.push(results.length ? `${results.length} movie${results.length === 1 ? "" : "s"} or show${results.length === 1 ? "" : "s"}` : "no movies or shows");
+    } else {
+      show("screens", "", []);
+      notes.push(`Movie & TV search failed: ${screens.reason.message}`);
     }
+    message.textContent = notes.join(" · ") + ` found for “${query}”.`;
   });
 }
 

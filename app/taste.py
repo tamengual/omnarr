@@ -162,12 +162,12 @@ def _store(state_path, table, key, value):
 _ol_state = {"fails": 0, "down_until": 0.0}
 
 
-def _ol(path, params):
+def _ol(path, params, timeout=15):
     """One Open Library request. When it's down, fail fast instead of waiting out every timeout."""
     if time.time() < _ol_state["down_until"]:
         raise RuntimeError("Open Library isn't answering; trying again later")
     try:
-        with httpx.Client(timeout=15, headers=UA) as c:
+        with httpx.Client(timeout=timeout, headers=UA) as c:
             r = c.get(OL + path, params=params)
             r.raise_for_status()
             out = r.json()
@@ -275,6 +275,34 @@ def fill(cfg, state_path, wanted, budget=120):
     return done
 
 
+def find_author(state_path, name, min_works=10):
+    """{name, key, works} for the best-known Open Library author with (almost) this name, or None."""
+    import difflib
+    con = _con(state_path)
+    try:
+        hit = _cached(con, "taste_lists", "who:" + name.lower(), LIST_DAYS)
+    finally:
+        con.close()
+    if hit is not None:
+        return hit or None
+    try:
+        docs = _ol("/search/authors.json", {"q": name, "limit": 8}, timeout=6).get("docs") or []
+    except Exception as e:
+        log.info("open library author search %s failed: %s", name, e)
+        return None
+    close = [d for d in docs if difflib.SequenceMatcher(None, (d.get("name") or "").lower(), name.lower()).ratio() >= 0.9
+             and (d.get("work_count") or 0) >= min_works]
+    best = max(close, key=lambda d: d.get("work_count") or 0, default=None)
+    out = {"name": best["name"], "key": best["key"], "works": best.get("work_count") or 0} if best else {}
+    _store(state_path, "taste_lists", "who:" + name.lower(), out)
+    return out or None
+
+
+def author_works(state_path, key):
+    """An Open Library author's best-known works (by their OL key, so a namesake's books never mix in)."""
+    return _list(state_path, "authorkey:" + key, {"author": key, "sort": "editions"}, interactive=True)
+
+
 def author_books(state_path, author):
     """Open Library's best-known works by an author, cached for LIST_DAYS."""
     return _list(state_path, "author:" + author.lower(), {"author": author, "sort": "editions"})
@@ -285,7 +313,7 @@ def subject_books(state_path, subject):
     return _list(state_path, "subject:" + q.lower(), {"subject": q, "sort": "editions"})
 
 
-def _list(state_path, key, params):
+def _list(state_path, key, params, interactive=False):
     con = _con(state_path)
     try:
         hit = _cached(con, "taste_lists", key, LIST_DAYS)
@@ -294,8 +322,10 @@ def _list(state_path, key, params):
     if hit is not None:
         return hit
     try:
-        docs = _ol("/search.json", {**params, "fields": OL_FIELDS, "limit": 40, "language": "eng"}).get("docs") or []
-        time.sleep(PAUSE)
+        docs = _ol("/search.json", {**params, "fields": OL_FIELDS, "limit": 40, "language": "eng"},
+                   timeout=6 if interactive else 15).get("docs") or []
+        if not interactive:                        # background lookups go gently; someone searching shouldn't wait
+            time.sleep(PAUSE)
     except Exception as e:
         log.info("open library list %s failed: %s", key, e)
         return []

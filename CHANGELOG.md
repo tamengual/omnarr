@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.17 — 2026-10-16
+
+- **One search for everything you can request.** "Not in your library?" now has a single button that searches books and movies & TV together and shows both. Before, there were two buttons and it was easy to search only movies.
+- **Search books by author.** Book search used to match titles only, so searching "Stephen King" found books *about* him. When a search is an author, Omnarr now lists their best-known books first (the ones you don't have yet first), and it forgives misspellings of authors in your library: "Steven King" shows Stephen King.
+- Single books are listed before box sets and collections, unless you're searching for a set.
+
 ## 1.0.16 — 2026-10-14
 
 - **"For you" learns what your library is about.** Omnarr now looks up each book's subjects on Open Library and each movie and show's keywords on TMDB (through Seerr), once per title, and builds a profile from the themes that are unusually common in what you've read and watched ("first contact", "dystopia", "end of the world"), not just broad genres. Suggestions explain themselves with it: "Because of Arrival, and it's about first contact, like Children of Time and The Expanse".
